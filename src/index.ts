@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import http from 'node:http';
+import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
@@ -40,10 +41,11 @@ const HERO_CAPTION = [
   '',
   'Мы приглашаем вас в игру, где эстетика встречается с азартом. Это пространство, где вы не наблюдаете — вы становитесь частью момента.',
   '',
-  '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>'
+  '<b><u>GameNight Host - Вы диктуете правила, мы создаем.</u></b>'
 ].join('\n');
 
-const HERO_IMAGE_URL = 'https://images.unsplash.com/photo-1511512578047-dfb367046420';
+// Путь к hero-картинке: из dist — на уровень выше в assets
+const HERO_IMAGE_PATH = path.join(__dirname, '..', 'assets', 'hero-new.png');
 
 const heroInlineKeyboard = [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]];
 
@@ -73,7 +75,7 @@ async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolea
 
   let message;
   try {
-    message = await ctx.replyWithPhoto(HERO_IMAGE_URL, heroOptions);
+    message = await ctx.replyWithPhoto({ source: HERO_IMAGE_PATH }, heroOptions);
   } catch (err) {
     console.error('Hero photo send failed, falling back to text:', err);
     try {

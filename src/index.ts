@@ -1,6 +1,15 @@
 import 'dotenv/config';
+import http from 'node:http';
 import { Telegraf, Markup } from 'telegraf';
 import type { Context } from 'telegraf';
+
+const port = Number(process.env.PORT ?? 3000);
+http
+  .createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OK');
+  })
+  .listen(port, () => console.log(`[health] listening on ${port}`));
 
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;

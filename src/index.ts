@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import http from 'node:http';
-import { Telegraf, Markup } from 'telegraf';
+import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
 const port = Number(process.env.PORT ?? 3000);
@@ -53,7 +53,9 @@ const HERO_CAPTION = [
 
 const HERO_IMAGE_URL = 'https://images.unsplash.com/photo-1511512578047-dfb367046420';
 
-async function sendHeroMessage(ctx: Context) {
+const heroInlineKeyboard = [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]];
+
+async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolean }) {
   const chatId = ctx.chat?.id;
 
   if (!chatId) {
@@ -71,9 +73,9 @@ async function sendHeroMessage(ctx: Context) {
     }
   }
 
-  const keyboard = Markup.inlineKeyboard([
-    Markup.button.webApp('🎮 Играть', webAppUrl)
-  ]);
+  const reply_markup = options?.removeKeyboard
+    ? { remove_keyboard: true, inline_keyboard: heroInlineKeyboard }
+    : { inline_keyboard: heroInlineKeyboard };
 
   let message;
   try {
@@ -81,13 +83,13 @@ async function sendHeroMessage(ctx: Context) {
       HERO_IMAGE_URL,
       {
         caption: HERO_CAPTION,
-        ...keyboard
+        reply_markup
       }
     );
   } catch (err) {
     console.error('Hero photo send failed, falling back to text:', err);
     try {
-      message = await ctx.reply(HERO_CAPTION, { ...keyboard });
+      message = await ctx.reply(HERO_CAPTION, { reply_markup });
     } catch (fallbackErr) {
       console.error('Hero fallback (text) failed:', fallbackErr);
       return;
@@ -100,16 +102,7 @@ async function sendHeroMessage(ctx: Context) {
 
 bot.start(async (ctx) => {
   try {
-    // Убираем reply-клавиатуру, чтобы показывать только hero (фото + inline-кнопка)
-    const removeKbMsg = await ctx.reply(' ', {
-      reply_markup: { remove_keyboard: true }
-    });
-    await sendHeroMessage(ctx);
-    try {
-      await ctx.deleteMessage(removeKbMsg.message_id);
-    } catch {
-      // игнорируем, если не удалось удалить служебное сообщение
-    }
+    await sendHeroMessage(ctx, { removeKeyboard: true });
   } catch (err) {
     console.error('Start handler error:', err);
   }

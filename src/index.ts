@@ -100,7 +100,16 @@ async function sendHeroMessage(ctx: Context) {
 
 bot.start(async (ctx) => {
   try {
+    // Убираем reply-клавиатуру, чтобы показывать только hero (фото + inline-кнопка)
+    const removeKbMsg = await ctx.reply(' ', {
+      reply_markup: { remove_keyboard: true }
+    });
     await sendHeroMessage(ctx);
+    try {
+      await ctx.deleteMessage(removeKbMsg.message_id);
+    } catch {
+      // игнорируем, если не удалось удалить служебное сообщение
+    }
   } catch (err) {
     console.error('Start handler error:', err);
   }

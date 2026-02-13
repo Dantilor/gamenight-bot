@@ -1,0 +1,28 @@
+{
+  "name": "gamenight-bot",
+  "version": "1.0.0",
+  "description": "Minimal Telegram bot launcher for GameNight Mini App",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "telegraf",
+    "mini-app"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -40,7 +40,7 @@ const HERO_CAPTION = [
   '',
   'Мы приглашаем вас в игру, где эстетика встречается с азартом. Это пространство, где вы не наблюдаете — вы становитесь частью момента.',
   '',
-  'GameNight Host - Вы диктуете правила, мы создаем.'
+  '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>'
 ].join('\n');
 
 const HERO_IMAGE_URL = 'https://images.unsplash.com/photo-1511512578047-dfb367046420';
@@ -69,19 +69,15 @@ async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolea
     ? { remove_keyboard: true, inline_keyboard: heroInlineKeyboard }
     : { inline_keyboard: heroInlineKeyboard };
 
+  const heroOptions = { caption: HERO_CAPTION, parse_mode: 'HTML' as const, reply_markup };
+
   let message;
   try {
-    message = await ctx.replyWithPhoto(
-      HERO_IMAGE_URL,
-      {
-        caption: HERO_CAPTION,
-        reply_markup
-      }
-    );
+    message = await ctx.replyWithPhoto(HERO_IMAGE_URL, heroOptions);
   } catch (err) {
     console.error('Hero photo send failed, falling back to text:', err);
     try {
-      message = await ctx.reply(HERO_CAPTION, { reply_markup });
+      message = await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML', reply_markup });
     } catch (fallbackErr) {
       console.error('Hero fallback (text) failed:', fallbackErr);
       return;

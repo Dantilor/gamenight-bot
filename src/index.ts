@@ -4,13 +4,13 @@ import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
-const port = Number(process.env.PORT ?? 3000);
-http
-  .createServer((_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('OK');
-  })
-  .listen(port, () => console.log(`[health] listening on ${port}`));
+function getPublicUrl(): string {
+  const url = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
+  if (!url) {
+    throw new Error('Set RENDER_EXTERNAL_URL (on Render) or PUBLIC_URL for webhook.');
+  }
+  return url.replace(/\/$/, '');
+}
 
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;
@@ -110,15 +110,71 @@ bot.catch((err, ctx) => {
   console.error('Bot error', err);
 });
 
-bot.launch().then(() => {
-  // Bot launched with long polling
-}).catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error('Failed to launch bot:', error);
-  process.exit(1);
+const port = Number(process.env.PORT ?? 3000);
+const publicUrl = getPublicUrl();
+const webhookPath = `${publicUrl}/telegram`;
+
+function parseBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OK');
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/telegram') {
+    let raw: string;
+    try {
+      raw = await parseBody(req);
+    } catch (err) {
+      console.error('Webhook body read error:', err);
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    if (!raw || !raw.trim()) {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    let update: unknown;
+    try {
+      update = JSON.parse(raw);
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    res.writeHead(200);
+    res.end();
+    bot.handleUpdate(update as Parameters<typeof bot.handleUpdate>[0]).catch((err) => {
+      console.error('Webhook handleUpdate error:', err);
+    });
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+server.listen(port, async () => {
+  console.log(`[health] listening on ${port}`);
+  await bot.telegram.setWebhook(webhookPath);
+  console.log('Webhook set to', webhookPath);
+});
+
+function shutdown() {
+  bot.telegram.deleteWebhook().catch(() => {});
+  server.close(() => process.exit(0));
+}
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
 

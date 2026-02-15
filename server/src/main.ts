@@ -1,9 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
+import path from 'node:path';
 import { bot } from './bot.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+
+app.use('/public', express.static(path.join(process.cwd(), 'server', 'public')));
 
 const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH || '/telegram/webhook-9f3k2lQp').replace(/\/+$/, '');
 

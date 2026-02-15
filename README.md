@@ -36,10 +36,12 @@ PUBLIC_URL=https://your-app.onrender.com
 BOT_WEBHOOK_PATH=/telegram/webhook-SECRET
 ```
 
-- `BOT_TOKEN` — токен Telegram-бота от `@BotFather`
-- `WEBAPP_URL` — URL твоего Telegram Mini App (WebApp)
-- `PUBLIC_URL` — публичный URL сервиса (на Render можно использовать `RENDER_EXTERNAL_URL`, он подставляется автоматически)
-- `BOT_WEBHOOK_PATH` — секретный путь для webhook (по умолчанию `/telegram/webhook-SECRET`). Не делайте путь публично известным.
+- `BOT_TOKEN` — токен Telegram-бота от @BotFather (обязательно)
+- `WEBAPP_URL` — URL Mini App (обязательно для кнопки «Открыть GameNight Host»)
+- `PUBLIC_URL` или `RENDER_EXTERNAL_URL` — публичный URL сервиса (на Render подставляется автоматически; нужен для картинки в /start и доступа по HTTPS к `/public/hero-new.png`)
+- `BOT_WEBHOOK_PATH` — путь webhook (по умолчанию `/telegram/webhook-SECRET`)
+
+Картинка hero после деплоя доступна по адресу: `https://<ваш-сервис>.onrender.com/public/hero-new.png`
 
 ## Скрипты
 

@@ -109,7 +109,7 @@ bot.catch((err, ctx) => {
   console.error('Bot error', err);
 });
 
-// ——— Express app ———
+// ——— Express app (только webhook, без bot.launch() / polling — иначе 409 Conflict) ———
 const app = express();
 
 // JSON body обязательно ДО webhook (Telegram шлёт JSON)
@@ -131,7 +131,7 @@ app.get('/health', (_req, res) => {
 // Webhook: один route, совпадающий 1:1 с BOT_WEBHOOK_PATH
 app.post(BOT_WEBHOOK_PATH, async (req, res) => {
   const update = req.body;
-  console.log('[webhook] update_id:', update?.update_id);
+  console.log('[webhook] update_id:', update?.update_id ?? '(none)');
 
   try {
     if (!update || typeof update !== 'object') {
@@ -157,7 +157,8 @@ const port = Number(process.env.PORT ?? 3000);
 
 const server = app.listen(port, async () => {
   console.log('[health] listening on', port);
-  console.log('[webhook] route POST', BOT_WEBHOOK_PATH);
+  console.log('[webhook] using route POST', BOT_WEBHOOK_PATH);
+  // Режим только webhook: bot.launch() / polling не используются (иначе 409 Conflict с getUpdates)
 
   const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
   if (publicUrl) {
@@ -171,6 +172,7 @@ const server = app.listen(port, async () => {
 });
 
 function shutdown() {
+  // deleteWebhook только при остановке процесса, не при старте
   bot.telegram.deleteWebhook().catch(() => {});
   server.close(() => process.exit(0));
 }

@@ -4,9 +4,6 @@ import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
-// Путь webhook: из env или явный дефолт (без завершающего слэша)
-const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH || '/telegram/webhook-9f3k2lQp').trim().replace(/\/$/, '') || '/telegram/webhook-9f3k2lQp';
-
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;
   if (!token || !token.trim()) {
@@ -109,54 +106,44 @@ bot.catch((err, ctx) => {
   console.error('Bot error', err);
 });
 
-// ——— Express app (только webhook, без bot.launch() / polling — иначе 409 Conflict) ———
+// ——— Express app (только webhook, без bot.launch()) ———
 const app = express();
 
-// JSON body обязательно ДО webhook (Telegram шлёт JSON)
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
-// Диагностика: логируем любой запрос к /telegram/*
-app.use((req, res, next) => {
-  if (req.path.startsWith('/telegram')) {
-    console.log('[telegram]', req.method, req.path, 'query:', req.url);
-  }
-  next();
-});
+const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH || '/telegram/webhook-9f3k2lQp').replace(/\/+$/, '');
 
-// Health (обязательно для Render)
 app.get('/health', (_req, res) => {
   res.status(200).type('text/plain').send('ok');
 });
 
-const webhookHandler = async (req: express.Request, res: express.Response) => {
-  const path = req.path;
-  console.log('[telegram] POST', path);
-  const update = req.body;
-  console.log('[webhook] update_id:', update?.update_id ?? '(none)');
-
+app.post(BOT_WEBHOOK_PATH, async (req, res) => {
+  console.log('[telegram] POST', BOT_WEBHOOK_PATH);
   try {
-    if (!update || typeof update !== 'object') {
-      console.error('[webhook] invalid body');
-      res.status(200).end();
-      return;
+    if (req.body && typeof req.body === 'object') {
+      await bot.handleUpdate(req.body, res);
     }
-    await bot.handleUpdate(update, res);
-    if (!res.headersSent) {
-      res.status(200).end();
-    }
-  } catch (err) {
-    console.error('[webhook] handleUpdate error', err);
-    if (!res.headersSent) {
-      res.status(200).end();
-    }
+  } catch (e) {
+    console.error('[webhook] handleUpdate error', e);
   }
-};
+  if (!res.headersSent) {
+    res.status(200).end();
+  }
+});
 
-app.post(BOT_WEBHOOK_PATH, webhookHandler);
-// Явный route для деплоя, чтобы POST /telegram/webhook-9f3k2lQp всегда отвечал 200
-if (BOT_WEBHOOK_PATH !== '/telegram/webhook-9f3k2lQp') {
-  app.post('/telegram/webhook-9f3k2lQp', webhookHandler);
-}
+app.post('/telegram/webhook-9f3k2lQp', async (req, res) => {
+  console.log('[telegram] POST', '/telegram/webhook-9f3k2lQp');
+  try {
+    if (req.body && typeof req.body === 'object') {
+      await bot.handleUpdate(req.body, res);
+    }
+  } catch (e) {
+    console.error('[webhook] handleUpdate error', e);
+  }
+  if (!res.headersSent) {
+    res.status(200).end();
+  }
+});
 
 // Место для роутов mini-app: app.use('/api', apiRouter);
 
@@ -165,7 +152,6 @@ const port = Number(process.env.PORT ?? 3000);
 const server = app.listen(port, async () => {
   console.log('[health] listening on', port);
   console.log('[webhook] route POST', BOT_WEBHOOK_PATH);
-  // Режим только webhook: bot.launch() / polling не используются (иначе 409 Conflict с getUpdates)
 
   const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
   if (publicUrl) {

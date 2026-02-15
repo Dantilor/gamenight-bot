@@ -4,14 +4,15 @@ import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
-const BOT_WEBHOOK_PATH = process.env.BOT_WEBHOOK_PATH ?? '/telegram/webhook-SECRET';
+// Путь webhook 1:1 из env (без завершающего слэша), иначе Telegram не совпадёт с route
+const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH ?? '/telegram/webhook-SECRET').replace(/\/$/, '') || '/telegram/webhook-SECRET';
 
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;
-  if (!token) {
-    throw new Error('Missing required environment variable BOT_TOKEN. Set it in .env or your environment.');
+  if (!token || !token.trim()) {
+    throw new Error('Missing required env BOT_TOKEN. Set it in Render Environment or .env');
   }
-  return token;
+  return token.trim();
 }
 
 function getWebAppUrl(): string {
@@ -100,28 +101,63 @@ bot.command('play', async (ctx) => {
   }
 });
 
+bot.command('ping', (ctx) => {
+  ctx.reply('pong').catch((err) => console.error('Ping reply error:', err));
+});
+
 bot.catch((err, ctx) => {
   console.error('Bot error', err);
 });
 
-// ——— Express app (единый сервер для бота и API mini-app) ———
+// ——— Express app ———
 const app = express();
+
+// JSON body обязательно ДО webhook (Telegram шлёт JSON)
 app.use(express.json());
+
+// Диагностика: логируем любой запрос к /telegram/*
+app.use((req, res, next) => {
+  if (req.path.startsWith('/telegram')) {
+    console.log('[telegram]', req.method, req.path, 'query:', req.url);
+  }
+  next();
+});
 
 // Health (обязательно для Render)
 app.get('/health', (_req, res) => {
   res.status(200).type('text/plain').send('ok');
 });
 
-// Webhook Telegram (секретный путь из env)
-app.post(BOT_WEBHOOK_PATH, bot.webhookCallback(BOT_WEBHOOK_PATH));
+// Webhook: один route, совпадающий 1:1 с BOT_WEBHOOK_PATH
+app.post(BOT_WEBHOOK_PATH, async (req, res) => {
+  const update = req.body;
+  console.log('[webhook] update_id:', update?.update_id);
 
-// Место для роутов mini-app, например: app.use('/api', apiRouter);
+  try {
+    if (!update || typeof update !== 'object') {
+      console.error('[webhook] invalid body');
+      res.status(200).end();
+      return;
+    }
+    await bot.handleUpdate(update, res);
+    if (!res.headersSent) {
+      res.status(200).end();
+    }
+  } catch (err) {
+    console.error('[webhook] handleUpdate error', err);
+    if (!res.headersSent) {
+      res.status(200).end();
+    }
+  }
+});
+
+// Место для роутов mini-app: app.use('/api', apiRouter);
 
 const port = Number(process.env.PORT ?? 3000);
 
 const server = app.listen(port, async () => {
-  console.log(`[health] listening on ${port}`);
+  console.log('[health] listening on', port);
+  console.log('[webhook] route POST', BOT_WEBHOOK_PATH);
 
   const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
   if (publicUrl) {

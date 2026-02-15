@@ -2,12 +2,12 @@
   "compilerOptions": {
     "target": "ES2019",
     "module": "commonjs",
-    "rootDir": "src",
+    "rootDir": "server/src",
     "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["server/src/**/*.ts"]
 }

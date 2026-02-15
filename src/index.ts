@@ -4,8 +4,8 @@ import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
-// Путь webhook 1:1 из env (без завершающего слэша), иначе Telegram не совпадёт с route
-const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH ?? '/telegram/webhook-SECRET').replace(/\/$/, '') || '/telegram/webhook-SECRET';
+// Путь webhook: из env или явный дефолт (без завершающего слэша)
+const BOT_WEBHOOK_PATH = (process.env.BOT_WEBHOOK_PATH || '/telegram/webhook-9f3k2lQp').trim().replace(/\/$/, '') || '/telegram/webhook-9f3k2lQp';
 
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;
@@ -128,8 +128,9 @@ app.get('/health', (_req, res) => {
   res.status(200).type('text/plain').send('ok');
 });
 
-// Webhook: один route, совпадающий 1:1 с BOT_WEBHOOK_PATH
-app.post(BOT_WEBHOOK_PATH, async (req, res) => {
+const webhookHandler = async (req: express.Request, res: express.Response) => {
+  const path = req.path;
+  console.log('[telegram] POST', path);
   const update = req.body;
   console.log('[webhook] update_id:', update?.update_id ?? '(none)');
 
@@ -149,7 +150,13 @@ app.post(BOT_WEBHOOK_PATH, async (req, res) => {
       res.status(200).end();
     }
   }
-});
+};
+
+app.post(BOT_WEBHOOK_PATH, webhookHandler);
+// Явный route для деплоя, чтобы POST /telegram/webhook-9f3k2lQp всегда отвечал 200
+if (BOT_WEBHOOK_PATH !== '/telegram/webhook-9f3k2lQp') {
+  app.post('/telegram/webhook-9f3k2lQp', webhookHandler);
+}
 
 // Место для роутов mini-app: app.use('/api', apiRouter);
 
@@ -157,7 +164,7 @@ const port = Number(process.env.PORT ?? 3000);
 
 const server = app.listen(port, async () => {
   console.log('[health] listening on', port);
-  console.log('[webhook] using route POST', BOT_WEBHOOK_PATH);
+  console.log('[webhook] route POST', BOT_WEBHOOK_PATH);
   // Режим только webhook: bot.launch() / polling не используются (иначе 409 Conflict с getUpdates)
 
   const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;

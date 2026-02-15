@@ -82,12 +82,14 @@ async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolea
   heroMessages.set(chatKey, messageId);
 }
 
+bot.catch((err, ctx) => {
+  console.error('[bot] telegraf error:', err);
+  console.error('[bot] update:', ctx.update);
+});
+
 bot.start(async (ctx) => {
-  try {
-    await sendHeroMessage(ctx, { removeKeyboard: true });
-  } catch (err) {
-    console.error('Start handler error:', err);
-  }
+  console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
+  await ctx.reply('start ok');
 });
 
 bot.command('play', async (ctx) => {
@@ -98,12 +100,9 @@ bot.command('play', async (ctx) => {
   }
 });
 
-bot.command('ping', (ctx) => {
-  ctx.reply('pong').catch((err) => console.error('Ping reply error:', err));
-});
-
-bot.catch((err, ctx) => {
-  console.error('Bot error', err);
+bot.command('ping', async (ctx) => {
+  console.log('[bot] /ping from', ctx.from?.id);
+  await ctx.reply('pong');
 });
 
 // ——— Express app (только webhook, без bot.launch()) ———

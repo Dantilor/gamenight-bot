@@ -1,16 +1,10 @@
 import 'dotenv/config';
-import http from 'node:http';
+import express from 'express';
 import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
-function getPublicUrl(): string {
-  const url = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
-  if (!url) {
-    throw new Error('Set RENDER_EXTERNAL_URL (on Render) or PUBLIC_URL for webhook.');
-  }
-  return url.replace(/\/$/, '');
-}
+const BOT_WEBHOOK_PATH = process.env.BOT_WEBHOOK_PATH ?? '/telegram/webhook-SECRET';
 
 function getBotToken(): string {
   const token = process.env.BOT_TOKEN;
@@ -110,65 +104,34 @@ bot.catch((err, ctx) => {
   console.error('Bot error', err);
 });
 
-const port = Number(process.env.PORT ?? 3000);
-const publicUrl = getPublicUrl();
-const webhookPath = `${publicUrl}/telegram`;
+// ——— Express app (единый сервер для бота и API mini-app) ———
+const app = express();
+app.use(express.json());
 
-function parseBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('OK');
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/telegram') {
-    let raw: string;
-    try {
-      raw = await parseBody(req);
-    } catch (err) {
-      console.error('Webhook body read error:', err);
-      res.writeHead(400);
-      res.end();
-      return;
-    }
-    if (!raw || !raw.trim()) {
-      res.writeHead(400);
-      res.end();
-      return;
-    }
-    let update: unknown;
-    try {
-      update = JSON.parse(raw);
-    } catch {
-      res.writeHead(400);
-      res.end();
-      return;
-    }
-    res.writeHead(200);
-    res.end();
-    bot.handleUpdate(update as Parameters<typeof bot.handleUpdate>[0]).catch((err) => {
-      console.error('Webhook handleUpdate error:', err);
-    });
-    return;
-  }
-
-  res.writeHead(404);
-  res.end();
+// Health (обязательно для Render)
+app.get('/health', (_req, res) => {
+  res.status(200).type('text/plain').send('ok');
 });
 
-server.listen(port, async () => {
+// Webhook Telegram (секретный путь из env)
+app.post(BOT_WEBHOOK_PATH, bot.webhookCallback(BOT_WEBHOOK_PATH));
+
+// Место для роутов mini-app, например: app.use('/api', apiRouter);
+
+const port = Number(process.env.PORT ?? 3000);
+
+const server = app.listen(port, async () => {
   console.log(`[health] listening on ${port}`);
-  await bot.telegram.setWebhook(webhookPath);
-  console.log('Webhook set to', webhookPath);
+
+  const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
+  if (publicUrl) {
+    const base = publicUrl.replace(/\/$/, '');
+    const fullWebhookUrl = `${base}${BOT_WEBHOOK_PATH}`;
+    await bot.telegram.setWebhook(fullWebhookUrl);
+    console.log('Webhook set to', fullWebhookUrl);
+  } else {
+    console.log('PUBLIC_URL / RENDER_EXTERNAL_URL not set — webhook not registered');
+  }
 });
 
 function shutdown() {
@@ -177,4 +140,3 @@ function shutdown() {
 }
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
-

@@ -12,6 +12,14 @@ export const bot = new Telegraf(token.trim());
 const HERO_CAPTION =
   'Ваш вечер начинается здесь!\n\nМы приглашаем вас в игру, где эстетика встречается с азартом. Это пространство, где вы не наблюдаете — вы становитесь частью момента.\n\nGameNight Host - Вы диктуете правила, мы создаем.';
 
+const MINI_APP_URL = 'https://telegram-card-game.onrender.com';
+
+const START_BUTTON = {
+  reply_markup: {
+    inline_keyboard: [[{ text: 'Стать частью игры', web_app: { url: MINI_APP_URL } }]],
+  },
+};
+
 function getPublicUrl(): string {
   return (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
 }
@@ -25,25 +33,21 @@ bot.start(async (ctx) => {
   console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
 
   const publicUrl = getPublicUrl();
-  const webappUrl = process.env.WEBAPP_URL?.trim() || '';
 
   if (publicUrl) {
     const imageUrl = `${publicUrl}/public/hero-new.png`;
     try {
-      await ctx.replyWithPhoto(imageUrl, { caption: HERO_CAPTION });
+      await ctx.replyWithPhoto(imageUrl, {
+        caption: HERO_CAPTION,
+        ...START_BUTTON,
+      });
     } catch (err) {
       console.warn('[bot] replyWithPhoto failed, sending text only:', err);
-      await ctx.reply(HERO_CAPTION);
+      await ctx.reply(HERO_CAPTION, START_BUTTON);
     }
   } else {
     console.warn('[bot] PUBLIC_URL / RENDER_EXTERNAL_URL not set — sending /start without image');
-    await ctx.reply(HERO_CAPTION);
-  }
-
-  if (webappUrl) {
-    await ctx.reply('Открыть мини-апп:', Markup.inlineKeyboard([Markup.button.webApp('🎮 Открыть GameNight Host', webappUrl)]));
-  } else {
-    await ctx.reply('WEBAPP_URL не задан');
+    await ctx.reply(HERO_CAPTION, START_BUTTON);
   }
 });
 

@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { bot } from './bot.js';
+import { closeDb } from './db.js';
+import { startSubscriptionScheduler } from './subscriptionJob.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -44,6 +46,8 @@ app.post('/telegram/webhook-9f3k2lQp', async (req, res) => {
 
 const port = Number(process.env.PORT ?? 3000);
 
+let subscriptionTask: { stop: () => void } | null = null;
+
 const server = app.listen(port, async () => {
   console.log('[health] listening on', port);
   console.log('[webhook] route POST', BOT_WEBHOOK_PATH);
@@ -57,9 +61,13 @@ const server = app.listen(port, async () => {
   } else {
     console.log('PUBLIC_URL / RENDER_EXTERNAL_URL not set — webhook not registered');
   }
+
+  subscriptionTask = startSubscriptionScheduler(bot);
 });
 
 function shutdown() {
+  subscriptionTask?.stop();
+  closeDb();
   bot.telegram.deleteWebhook().catch(() => {});
   server.close(() => process.exit(0));
 }

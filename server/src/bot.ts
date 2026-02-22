@@ -1,4 +1,5 @@
 import { Telegraf, Markup } from 'telegraf';
+import { ensureUser } from './db.js';
 
 console.log('[bot] module loaded');
 
@@ -31,6 +32,7 @@ bot.catch((err, ctx) => {
 
 bot.start(async (ctx) => {
   console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
+  if (ctx.from?.id) ensureUser(ctx.from.id);
 
   const publicUrl = getPublicUrl();
 
@@ -78,6 +80,19 @@ bot.command('play', async (ctx) => {
   } else if (!webappUrl) {
     await ctx.reply('WEBAPP_URL не задан');
   }
+});
+
+const TARIFFS_TEXT = `📋 Тарифы подписки
+
+• **Месяц** — полный доступ на 30 дней
+• **3 месяца** — выгоднее на 15%
+• **Год** — максимальная выгода
+
+Выберите подходящий тариф или напишите в поддержку.`;
+
+bot.action('renew_subscription', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(TARIFFS_TEXT, { parse_mode: 'Markdown' });
 });
 
 console.log('[bot] handlers registered');

@@ -27,6 +27,10 @@ const START_BUTTON = {
   },
 };
 
+// Убираем кастомную клавиатуру при каждом ответе (remove_keyboard и inline_keyboard в одном сообщении нельзя)
+const REMOVE_KEYBOARD = { reply_markup: { remove_keyboard: true } } as const;
+const ZERO_WIDTH = '\u200B';
+
 bot.catch((err, ctx) => {
   console.error('[bot] telegraf error:', err);
   console.error('[bot] update:', ctx.update);
@@ -36,6 +40,7 @@ bot.start(async (ctx) => {
   console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
   if (ctx.from?.id) ensureUser(ctx.from.id);
 
+  await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
   await ctx.reply(HERO_CAPTION, {
     parse_mode: 'HTML',
     ...START_BUTTON,
@@ -44,12 +49,13 @@ bot.start(async (ctx) => {
 
 bot.command('ping', async (ctx) => {
   console.log('[bot] /ping from', ctx.from?.id);
-  await ctx.reply('pong');
+  await ctx.reply('pong', REMOVE_KEYBOARD);
 });
 
 bot.command('play', async (ctx) => {
   console.log('[bot] /play from', ctx.from?.id);
   const webappUrl = process.env.WEBAPP_URL?.trim() || '';
+  await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
   if (webappUrl) {
     await ctx.reply(HERO_CAPTION, {
       parse_mode: 'HTML',
@@ -57,7 +63,7 @@ bot.command('play', async (ctx) => {
     });
   } else {
     await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
-    await ctx.reply('WEBAPP_URL не задан');
+    await ctx.reply('WEBAPP_URL не задан', REMOVE_KEYBOARD);
   }
 });
 
@@ -71,7 +77,7 @@ const TARIFFS_TEXT = `📋 Тарифы подписки
 
 bot.action('renew_subscription', async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply(TARIFFS_TEXT, { parse_mode: 'Markdown' });
+  await ctx.reply(TARIFFS_TEXT, { parse_mode: 'Markdown', ...REMOVE_KEYBOARD });
 });
 
 console.log('[bot] handlers registered');

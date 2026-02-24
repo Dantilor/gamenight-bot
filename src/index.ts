@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import path from 'node:path';
 import { Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
 
@@ -29,15 +28,17 @@ const bot = new Telegraf(botToken);
 const heroMessages = new Map<string, number>();
 
 const HERO_CAPTION = [
-  'Ваш вечер начинается здесь!',
+  '<b>Ваш вечер начинается прямо сейчас!</b> ✨',
   '',
-  'Мы приглашаем вас в игру, где эстетика встречается с азартом. Это пространство, где вы не наблюдаете — вы становитесь частью момента.',
+  'Здесь решают эмоции, интеллект и смелость.',
+  'Вы не наблюдаете — вы управляете игрой.',
+  '',
+  'Соберите тех, с кем хочется разделить этот вечер',
+  'Выберите формат игры',
+  'И позвольте атмосфере сделать своё дело',
   '',
   '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>'
 ].join('\n');
-
-// Путь к hero-картинке: из dist — на уровень выше в assets
-const HERO_IMAGE_PATH = path.join(__dirname, '..', 'assets', 'hero-new.png');
 
 const heroInlineKeyboard = [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]];
 
@@ -63,20 +64,10 @@ async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolea
     ? { remove_keyboard: true, inline_keyboard: heroInlineKeyboard }
     : { inline_keyboard: heroInlineKeyboard };
 
-  const heroOptions = { caption: HERO_CAPTION, parse_mode: 'HTML' as const, reply_markup };
-
-  let message;
-  try {
-    message = await ctx.replyWithPhoto({ source: HERO_IMAGE_PATH }, heroOptions);
-  } catch (err) {
-    console.error('Hero photo send failed, falling back to text:', err);
-    try {
-      message = await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML', reply_markup });
-    } catch (fallbackErr) {
-      console.error('Hero fallback (text) failed:', fallbackErr);
-      return;
-    }
-  }
+  const message = await ctx.reply(HERO_CAPTION, {
+    parse_mode: 'HTML',
+    reply_markup,
+  });
 
   const messageId = Array.isArray(message) ? message[0].message_id : message.message_id;
   heroMessages.set(chatKey, messageId);

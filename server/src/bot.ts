@@ -11,7 +11,13 @@ if (!token || !token.trim()) {
 export const bot = new Telegraf(token.trim());
 
 const HERO_CAPTION =
-  'Ваш вечер начинается здесь!\n\nМы приглашаем вас в игру, где эстетика встречается с азартом. Это пространство, где вы не наблюдаете — вы становитесь частью момента.\n\nGameNight Host - Вы диктуете правила, мы создаем.';
+  '<b>Ваш вечер начинается прямо сейчас!</b> ✨\n\n' +
+  'Здесь решают эмоции, интеллект и смелость.\n' +
+  'Вы не наблюдаете — вы управляете игрой.\n\n' +
+  'Соберите тех, с кем хочется разделить этот вечер\n' +
+  'Выберите формат игры\n' +
+  'И позвольте атмосфере сделать своё дело\n\n' +
+  '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>';
 
 const MINI_APP_URL = 'https://telegram-card-game.onrender.com';
 
@@ -20,10 +26,6 @@ const START_BUTTON = {
     inline_keyboard: [[{ text: 'Стать частью игры', web_app: { url: MINI_APP_URL } }]],
   },
 };
-
-function getPublicUrl(): string {
-  return (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
-}
 
 bot.catch((err, ctx) => {
   console.error('[bot] telegraf error:', err);
@@ -34,23 +36,10 @@ bot.start(async (ctx) => {
   console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
   if (ctx.from?.id) ensureUser(ctx.from.id);
 
-  const publicUrl = getPublicUrl();
-
-  if (publicUrl) {
-    const imageUrl = `${publicUrl}/public/hero-new.png`;
-    try {
-      await ctx.replyWithPhoto(imageUrl, {
-        caption: HERO_CAPTION,
-        ...START_BUTTON,
-      });
-    } catch (err) {
-      console.warn('[bot] replyWithPhoto failed, sending text only:', err);
-      await ctx.reply(HERO_CAPTION, START_BUTTON);
-    }
-  } else {
-    console.warn('[bot] PUBLIC_URL / RENDER_EXTERNAL_URL not set — sending /start without image');
-    await ctx.reply(HERO_CAPTION, START_BUTTON);
-  }
+  await ctx.reply(HERO_CAPTION, {
+    parse_mode: 'HTML',
+    ...START_BUTTON,
+  });
 });
 
 bot.command('ping', async (ctx) => {
@@ -60,24 +49,14 @@ bot.command('ping', async (ctx) => {
 
 bot.command('play', async (ctx) => {
   console.log('[bot] /play from', ctx.from?.id);
-  const publicUrl = getPublicUrl();
   const webappUrl = process.env.WEBAPP_URL?.trim() || '';
-  if (publicUrl) {
-    try {
-      const opts = webappUrl
-        ? { caption: HERO_CAPTION, ...Markup.inlineKeyboard([Markup.button.webApp('🎮 Открыть GameNight Host', webappUrl)]) }
-        : { caption: HERO_CAPTION };
-      await ctx.replyWithPhoto(`${publicUrl}/public/hero-new.png`, opts);
-    } catch (err) {
-      console.warn('[bot] /play photo failed:', err);
-      await ctx.reply(HERO_CAPTION);
-    }
+  if (webappUrl) {
+    await ctx.reply(HERO_CAPTION, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([Markup.button.webApp('🎮 Открыть GameNight Host', webappUrl)]),
+    });
   } else {
-    await ctx.reply(HERO_CAPTION);
-  }
-  if (webappUrl && !publicUrl) {
-    await ctx.reply('Открыть мини-апп:', Markup.inlineKeyboard([Markup.button.webApp('🎮 Открыть GameNight Host', webappUrl)]));
-  } else if (!webappUrl) {
+    await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
     await ctx.reply('WEBAPP_URL не задан');
   }
 });

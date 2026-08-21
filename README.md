@@ -32,14 +32,14 @@ cp .env.example .env
 
 ```bash
 BOT_TOKEN=ВАШ_ТОКЕН_ОТ_BOTFATHER
-WEBAPP_URL=ВАШ_URL_MINI_APP
+MINI_APP_URL=https://gamenight-web.onrender.com
 PUBLIC_URL=https://your-app.onrender.com
 BOT_WEBHOOK_PATH=/telegram/webhook-SECRET
 ```
 
 - `BOT_TOKEN` — токен Telegram-бота от @BotFather (обязательно)
-- `WEBAPP_URL` — URL Mini App (обязательно для кнопки «Открыть GameNight Host»)
-- `PUBLIC_URL` или `RENDER_EXTERNAL_URL` — публичный URL сервиса (на Render подставляется автоматически; нужен для картинки в /start и доступа по HTTPS к `/public/hero-new.png`)
+- `MINI_APP_URL` — URL frontend Mini App (обязательно для кнопок `web_app`; не используйте backend/API host). Устаревший алиас: `WEBAPP_URL`
+- `PUBLIC_URL` или `RENDER_EXTERNAL_URL` — публичный URL сервиса бота/webhook (на Render подставляется автоматически; нужен для картинки в /start и доступа по HTTPS к `/public/hero-new.png`)
 - `BOT_WEBHOOK_PATH` — путь webhook (по умолчанию `/telegram/webhook-SECRET`)
 
 Картинка hero после деплоя доступна по адресу: `https://<ваш-сервис>.onrender.com/public/hero-new.png`
@@ -84,7 +84,7 @@ curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
 - Тип: **Web Service**. Один сервис — и бот (webhook), и при необходимости API mini-app.
 - **Переменные окружения в Render (обязательные):**
   - `BOT_TOKEN` — токен от @BotFather
-  - `WEBAPP_URL` — URL Mini App
+  - `MINI_APP_URL` — URL frontend Mini App (`https://gamenight-web.onrender.com`), не API
   - `BOT_WEBHOOK_PATH` — путь webhook **ровно как в URL** (например `/telegram/webhook-9f3k2lQp`). Без завершающего слэша. Если не задан — по умолчанию `/telegram/webhook-SECRET`.
   - `PUBLIC_URL` на Render можно не задавать — подставляется `RENDER_EXTERNAL_URL`.
 - После деплоя в логах должно быть: `[webhook] route POST <BOT_WEBHOOK_PATH>` и `Webhook set to https://...`.

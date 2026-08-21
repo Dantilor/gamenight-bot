@@ -19,13 +19,16 @@ const HERO_CAPTION =
   'И позвольте атмосфере сделать своё дело\n\n' +
   '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>';
 
-const MINI_APP_URL = 'https://telegram-card-game.onrender.com';
+/** Frontend Mini App URL only — never backend/API host. */
+function getMiniAppUrl(): string {
+  return (process.env.MINI_APP_URL || process.env.WEBAPP_URL || '').trim();
+}
 
-const START_BUTTON = {
-  reply_markup: {
-    inline_keyboard: [[{ text: 'Стать частью игры', web_app: { url: MINI_APP_URL } }]],
-  },
-};
+const miniAppUrl = getMiniAppUrl();
+
+function webAppInlineKeyboard(buttonText: string) {
+  return Markup.inlineKeyboard([Markup.button.webApp(buttonText, miniAppUrl)]);
+}
 
 // Убираем кастомную клавиатуру при каждом ответе (remove_keyboard и inline_keyboard в одном сообщении нельзя)
 const REMOVE_KEYBOARD = { reply_markup: { remove_keyboard: true } } as const;
@@ -41,10 +44,15 @@ bot.start(async (ctx) => {
   if (ctx.from?.id) ensureUser(ctx.from.id);
 
   await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
-  await ctx.reply(HERO_CAPTION, {
-    parse_mode: 'HTML',
-    ...START_BUTTON,
-  });
+  if (miniAppUrl) {
+    await ctx.reply(HERO_CAPTION, {
+      parse_mode: 'HTML',
+      ...webAppInlineKeyboard('Стать частью игры'),
+    });
+  } else {
+    await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
+    await ctx.reply('MINI_APP_URL не задан', REMOVE_KEYBOARD);
+  }
 });
 
 bot.command('ping', async (ctx) => {
@@ -54,16 +62,15 @@ bot.command('ping', async (ctx) => {
 
 bot.command('play', async (ctx) => {
   console.log('[bot] /play from', ctx.from?.id);
-  const webappUrl = process.env.WEBAPP_URL?.trim() || '';
   await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
-  if (webappUrl) {
+  if (miniAppUrl) {
     await ctx.reply(HERO_CAPTION, {
       parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([Markup.button.webApp('🎮 Открыть GameNight Host', webappUrl)]),
+      ...webAppInlineKeyboard('🎮 Открыть GameNight Host'),
     });
   } else {
     await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
-    await ctx.reply('WEBAPP_URL не задан', REMOVE_KEYBOARD);
+    await ctx.reply('MINI_APP_URL не задан', REMOVE_KEYBOARD);
   }
 });
 

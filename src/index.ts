@@ -11,16 +11,16 @@ function getBotToken(): string {
   return token.trim();
 }
 
-function getWebAppUrl(): string {
-  const url = process.env.WEBAPP_URL;
+function getMiniAppUrl(): string {
+  const url = (process.env.MINI_APP_URL || process.env.WEBAPP_URL || '').trim();
   if (!url) {
-    throw new Error('WEBAPP_URL is not set in .env file');
+    throw new Error('MINI_APP_URL (or WEBAPP_URL) is not set in .env file');
   }
   return url;
 }
 
 const botToken = getBotToken();
-const webAppUrl = getWebAppUrl();
+const miniAppUrl = getMiniAppUrl();
 
 const bot = new Telegraf(botToken);
 
@@ -40,7 +40,7 @@ const HERO_CAPTION = [
   '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>'
 ].join('\n');
 
-const heroInlineKeyboard = [[{ text: '🎮 Играть', web_app: { url: webAppUrl } }]];
+const heroInlineKeyboard = [[{ text: '🎮 Играть', web_app: { url: miniAppUrl } }]];
 
 async function sendHeroMessage(ctx: Context, options?: { removeKeyboard?: boolean }) {
   const chatId = ctx.chat?.id;

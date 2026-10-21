@@ -1,117 +1,80 @@
-import Database from 'better-sqlite3';
-import { existsSync, mkdirSync } from 'node:fs';
-import path from 'node:path';
+import pg, { type Pool, type QueryResult } from 'pg';
+import { resolvePgPoolConfig } from './dbTls.js';
+import { redact } from './log.js';
+import type { SqlConnection, SqlQuery, SqlResult } from './premiumReader.js';
 
-const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), 'server', 'data', 'bot.db');
+let pool: Pool | null = null;
 
-let db: Database.Database | null = null;
-
-function getDb(): Database.Database {
-  if (!db) {
-    const dir = path.dirname(DB_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    initSchema(db);
-  }
-  return db;
+function toResult<T>(result: QueryResult): SqlResult<T> {
+  return {
+    rows: result.rows as T[],
+    rowCount: result.rowCount ?? result.rows.length,
+  };
 }
 
-export type SubscriptionStatus = 'active' | 'expired';
-
-export interface UserRow {
-  user_id: number;
-  subscription_expires_at: string | null;
-  subscription_status: SubscriptionStatus;
-  subscription_expiry_notified_at: string | null;
+export function getConnection(): SqlConnection | null {
+  if (!pool) return null;
+  const current = pool;
+  const query: SqlQuery = async (sql, params) => toResult(await current.query(sql, params));
+  return {
+    query,
+    async withTransaction(fn) {
+      const client = await current.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(async (sql, params) => toResult(await client.query(sql, params)));
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  };
 }
 
-function initSchema(database: Database.Database): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      user_id INTEGER PRIMARY KEY,
-      subscription_expires_at TEXT,
-      subscription_status TEXT NOT NULL DEFAULT 'active' CHECK (subscription_status IN ('active', 'expired')),
-      subscription_expiry_notified_at TEXT,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_users_subscription_check
-      ON users(subscription_status, subscription_expires_at)
-      WHERE subscription_status = 'active' AND subscription_expires_at IS NOT NULL;
-  `);
+export async function initDb(env: NodeJS.ProcessEnv): Promise<void> {
+  if (pool) return;
+  const resolved = resolvePgPoolConfig(env);
+  console.log('[db] tls', {
+    host: resolved.summary.host,
+    port: resolved.summary.port,
+    database: resolved.summary.database,
+    user: resolved.summary.user,
+    rejectUnauthorized: resolved.summary.rejectUnauthorized,
+    minVersion: resolved.summary.minVersion,
+    servername: resolved.summary.servername,
+    caSource: resolved.summary.caSource,
+    checkServerIdentity: resolved.summary.checkServerIdentity,
+  });
+  const next = new pg.Pool({
+    connectionString: resolved.connectionString,
+    ssl: resolved.ssl,
+    max: 2,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    statement_timeout: 15_000,
+    query_timeout: 15_000,
+    application_name: 'gamenight-bot',
+    options: '-c timezone=UTC',
+  });
+  next.on('error', (error) => {
+    console.error('[db] unexpected error', redact(error));
+  });
+  pool = next;
 }
 
-/**
- * Ensure user exists; does not overwrite existing subscription. Use setSubscription when user pays.
- */
-export function ensureUser(userId: number): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO users (user_id, subscription_expires_at, subscription_status, updated_at)
-       VALUES (?, NULL, 'active', ?)
-       ON CONFLICT(user_id) DO NOTHING`
-    )
-    .run(userId, now);
+export async function pingDb(): Promise<void> {
+  if (!pool) throw new Error('database is not configured');
+  await pool.query('SELECT 1 AS ok');
 }
 
-/**
- * Set subscription (e.g. after payment). Pass null expiresAt for no expiry.
- */
-export function setSubscription(userId: number, subscriptionExpiresAt: string | null, subscriptionStatus: SubscriptionStatus = 'active'): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO users (user_id, subscription_expires_at, subscription_status, subscription_expiry_notified_at, updated_at)
-       VALUES (?, ?, ?, NULL, ?)
-       ON CONFLICT(user_id) DO UPDATE SET
-         subscription_expires_at = excluded.subscription_expires_at,
-         subscription_status = excluded.subscription_status,
-         subscription_expiry_notified_at = NULL,
-         updated_at = excluded.updated_at`
-    )
-    .run(userId, subscriptionExpiresAt, subscriptionStatus, now);
+export async function closeDb(): Promise<void> {
+  const current = pool;
+  pool = null;
+  if (!current) return;
+  await current.end();
 }
 
-/**
- * Get users that are still active but subscription_expires_at is in the past and not yet notified.
- */
-export function getExpiredActiveUsers(): UserRow[] {
-  const database = getDb();
-  const now = new Date().toISOString();
-  const rows = database
-    .prepare(
-      `SELECT user_id, subscription_expires_at, subscription_status, subscription_expiry_notified_at
-       FROM users
-       WHERE subscription_status = 'active'
-         AND subscription_expires_at IS NOT NULL
-         AND subscription_expires_at < ?
-         AND subscription_expiry_notified_at IS NULL`
-    )
-    .all(now) as UserRow[];
-  return rows;
-}
-
-/**
- * Mark user as expired and set notification timestamp so we don't notify again.
- */
-export function markExpiredAndNotified(userId: number): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `UPDATE users
-       SET subscription_status = 'expired', subscription_expiry_notified_at = ?, updated_at = ?
-       WHERE user_id = ?`
-    )
-    .run(now, now, userId);
-}
-
-export function closeDb(): void {
-  if (db) {
-    db.close();
-    db = null;
-  }
-}

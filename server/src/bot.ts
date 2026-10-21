@@ -1,16 +1,13 @@
-import { Telegraf, Markup } from 'telegraf';
-import { ensureUser } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Input, Markup, Telegraf } from 'telegraf';
+import type { Context } from 'telegraf';
+import type { AppConfig } from './config.js';
+import { redact } from './log.js';
+import { fetchPlans, formatTariffs, premiumPageUrl } from './plans.js';
+import { EXPIRED_TEXT } from './subscriptionJob.js';
 
-console.log('[bot] module loaded');
-
-const token = process.env.BOT_TOKEN;
-if (!token || !token.trim()) {
-  throw new Error('Missing required env BOT_TOKEN. Set it in Render Environment or .env');
-}
-
-export const bot = new Telegraf(token.trim());
-
-const HERO_CAPTION =
+export const HERO_CAPTION =
   '<b>Ваш вечер начинается прямо сейчас!</b> ✨\n\n' +
   'Здесь решают эмоции, интеллект и смелость.\n' +
   'Вы не наблюдаете — вы управляете игрой.\n\n' +
@@ -19,72 +16,113 @@ const HERO_CAPTION =
   'И позвольте атмосфере сделать своё дело\n\n' +
   '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>';
 
-/** Frontend Mini App URL only — never backend/API host. */
-function getMiniAppUrl(): string {
-  return (process.env.MINI_APP_URL || process.env.WEBAPP_URL || '').trim();
-}
+export const START_BUTTON_TEXT = 'Стать частью игры';
+export const PLAY_BUTTON_TEXT = '🎮 Открыть GameNight Host';
+export const RENEW_BUTTON_TEXT = 'Продлить подписку';
+export const OPEN_PREMIUM_BUTTON_TEXT = 'Открыть Premium';
 
-const miniAppUrl = getMiniAppUrl();
-
-function webAppInlineKeyboard(buttonText: string) {
-  return Markup.inlineKeyboard([Markup.button.webApp(buttonText, miniAppUrl)]);
-}
-
-// Убираем кастомную клавиатуру при каждом ответе (remove_keyboard и inline_keyboard в одном сообщении нельзя)
 const REMOVE_KEYBOARD = { reply_markup: { remove_keyboard: true } } as const;
 const ZERO_WIDTH = '\u200B';
+const heroMessageIds = new Map<number, number>();
 
-bot.catch((err, ctx) => {
-  console.error('[bot] telegraf error:', err);
-  console.error('[bot] update:', ctx.update);
-});
+export type BotDeps = {
+  config: AppConfig;
+  fetchImpl?: typeof fetch;
+};
 
-bot.start(async (ctx) => {
-  console.log('[bot] /start from', ctx.from?.id, ctx.from?.username);
-  if (ctx.from?.id) ensureUser(ctx.from.id);
+export function createBot(deps: BotDeps): Telegraf {
+  const token = deps.config.botToken.trim();
+  if (!token) throw new Error('Missing required env BOT_TOKEN');
+  const bot = new Telegraf(token);
+  const miniAppUrl = deps.config.miniAppUrl;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const heroReady = fs.existsSync(deps.config.heroImagePath);
+  console.log(heroReady ? '[bot] hero image ready' : '[bot] hero image missing, welcome will be text only');
 
-  await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
-  if (miniAppUrl) {
-    await ctx.reply(HERO_CAPTION, {
-      parse_mode: 'HTML',
-      ...webAppInlineKeyboard('Стать частью игры'),
-    });
-  } else {
-    await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
+  bot.catch((error, ctx) => {
+    const updateId = 'update_id' in ctx.update ? ctx.update.update_id : undefined;
+    console.error('[bot] handler error', redact(error), { updateId });
+  });
+
+  bot.start(async (ctx) => {
+    console.log('[bot] /start', { id: ctx.from?.id });
+    await sendHero(ctx, deps.config.heroImagePath, miniAppUrl, START_BUTTON_TEXT);
+  });
+
+  bot.command('play', async (ctx) => {
+    console.log('[bot] /play', { id: ctx.from?.id });
+    await sendHero(ctx, deps.config.heroImagePath, miniAppUrl, PLAY_BUTTON_TEXT);
+  });
+
+  bot.command('ping', async (ctx) => {
+    console.log('[bot] /ping', { id: ctx.from?.id });
+    await ctx.reply('pong', REMOVE_KEYBOARD);
+  });
+
+  bot.action('renew_subscription', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => undefined);
+    const premiumUrl = premiumPageUrl(miniAppUrl);
+    const plans = await fetchPlans(deps.config.apiUrl, fetchImpl);
+    const text = formatTariffs(plans);
+    await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => undefined);
+    if (!premiumUrl) {
+      await ctx.reply(`${text}\n\nMINI_APP_URL не задан`);
+      return;
+    }
+    await ctx.reply(text, Markup.inlineKeyboard([Markup.button.webApp(OPEN_PREMIUM_BUTTON_TEXT, premiumUrl)]));
+  });
+
+  console.log('[bot] handlers registered');
+  return bot;
+}
+
+export async function sendExpiryNotice(bot: Telegraf, telegramId: number): Promise<number> {
+  const message = await bot.telegram.sendMessage(telegramId, EXPIRED_TEXT, {
+    reply_markup: {
+      inline_keyboard: [[{ text: RENEW_BUTTON_TEXT, callback_data: 'renew_subscription' }]],
+    },
+  });
+  if (!Number.isInteger(message.message_id) || message.message_id <= 0) {
+    throw new Error('Telegram did not confirm the message');
+  }
+  return message.message_id;
+}
+
+async function sendHero(ctx: Context, heroImagePath: string, miniAppUrl: string, buttonText: string): Promise<void> {
+  await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => undefined);
+  const chatId = ctx.chat?.id;
+  if (chatId) {
+    const previous = heroMessageIds.get(chatId);
+    if (previous) {
+      await ctx.telegram.deleteMessage(chatId, previous).catch(() => undefined);
+      heroMessageIds.delete(chatId);
+    }
+  }
+
+  const keyboard = miniAppUrl
+    ? Markup.inlineKeyboard([Markup.button.webApp(buttonText, miniAppUrl)])
+    : undefined;
+  let messageId: number | null = null;
+  if (fs.existsSync(heroImagePath)) {
+    try {
+      const sent = await ctx.replyWithPhoto(Input.fromLocalFile(path.resolve(heroImagePath)), {
+        caption: HERO_CAPTION,
+        parse_mode: 'HTML',
+        ...(keyboard ?? {}),
+      });
+      messageId = sent.message_id;
+    } catch (error) {
+      console.error('[bot] hero photo failed, sending text', redact(error));
+    }
+  }
+  if (messageId === null) {
+    const sent = keyboard
+      ? await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML', ...keyboard })
+      : await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
+    messageId = sent.message_id;
+  }
+  if (!miniAppUrl) {
     await ctx.reply('MINI_APP_URL не задан', REMOVE_KEYBOARD);
   }
-});
-
-bot.command('ping', async (ctx) => {
-  console.log('[bot] /ping from', ctx.from?.id);
-  await ctx.reply('pong', REMOVE_KEYBOARD);
-});
-
-bot.command('play', async (ctx) => {
-  console.log('[bot] /play from', ctx.from?.id);
-  await ctx.reply(ZERO_WIDTH, REMOVE_KEYBOARD).catch(() => {});
-  if (miniAppUrl) {
-    await ctx.reply(HERO_CAPTION, {
-      parse_mode: 'HTML',
-      ...webAppInlineKeyboard('🎮 Открыть GameNight Host'),
-    });
-  } else {
-    await ctx.reply(HERO_CAPTION, { parse_mode: 'HTML' });
-    await ctx.reply('MINI_APP_URL не задан', REMOVE_KEYBOARD);
-  }
-});
-
-const TARIFFS_TEXT = `📋 Тарифы подписки
-
-• **Месяц** — полный доступ на 30 дней
-• **3 месяца** — выгоднее на 15%
-• **Год** — максимальная выгода
-
-Выберите подходящий тариф или напишите в поддержку.`;
-
-bot.action('renew_subscription', async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.reply(TARIFFS_TEXT, { parse_mode: 'Markdown', ...REMOVE_KEYBOARD });
-});
-
-console.log('[bot] handlers registered');
+  if (chatId && messageId) heroMessageIds.set(chatId, messageId);
+}

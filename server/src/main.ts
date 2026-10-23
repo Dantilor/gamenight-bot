@@ -1,8 +1,9 @@
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
 import cron, { type ScheduledTask } from 'node-cron';
-import express, { type ErrorRequestHandler, type Express } from 'express';
+import express, { type ErrorRequestHandler, type Express, type Response } from 'express';
 import type { Telegraf } from 'telegraf';
 import { createBot, sendExpiryNotice, type BotDeps } from './bot.js';
 import { buildWebhookUrl, readConfig, type AppConfig } from './config.js';
@@ -11,6 +12,7 @@ import { redact } from './log.js';
 import { createPremiumReader } from './premiumReader.js';
 import { runSubscriptionExpiryJob } from './subscriptionJob.js';
 import { logWebhookRejection, parseTelegramUpdate, readSecretHeader, rejectWebhook, safeEqual, webhookSecretFailure } from './webhook.js';
+import { buildWebhookReply, publicHeroPhotoUrl } from './webhookReply.js';
 
 export type TelegramRegistrar = {
   setWebhook(url: string, extra?: { secret_token?: string }): Promise<unknown>;
@@ -69,6 +71,12 @@ export function createApp(config: AppConfig, deps: Pick<BotDeps, 'fetchImpl'> = 
       return;
     }
     console.log('[telegram] update', update.update_id);
+    if (config.replyMode === 'webhook') {
+      // One Bot API method is written to this HTTP response. handleUpdate is not used:
+      // it calls getMe first, and Telegraf's webhookReply allowlist excludes sendMessage and sendPhoto.
+      await answerByWebhook(res, update, config, deps.fetchImpl);
+      return;
+    }
     try {
       await bot.handleUpdate(update as never, res);
     } catch (error) {
@@ -89,6 +97,14 @@ export function createApp(config: AppConfig, deps: Pick<BotDeps, 'fetchImpl'> = 
 }
 
 export async function registerWebhook(telegram: TelegramRegistrar, config: AppConfig): Promise<'disabled' | 'registered' | 'skipped' | 'failed'> {
+  if (config.replyMode === 'webhook') {
+    if (config.enableWebhookRegistration) {
+      console.error('[webhook] ENABLE_WEBHOOK_REGISTRATION=true is incompatible with TELEGRAM_REPLY_MODE=webhook; cannot call setWebhook; existing Telegram webhook was not changed');
+      return 'skipped';
+    }
+    console.log('[webhook] registration disabled (ENABLE_WEBHOOK_REGISTRATION is not true); existing Telegram webhook was not changed');
+    return 'disabled';
+  }
   if (!config.enableWebhookRegistration) {
     console.log('[webhook] registration disabled (ENABLE_WEBHOOK_REGISTRATION is not true); existing Telegram webhook was not changed');
     return 'disabled';
@@ -178,6 +194,18 @@ async function bootstrap(
   }
   if (stopped()) return;
 
+  if (config.replyMode === 'webhook') {
+    if (!publicHeroPhotoUrl(config.publicUrl) || !fs.existsSync(config.heroImagePath)) {
+      console.warn('[webhook] hero photo is not available; /start and /play will use sendMessage');
+    }
+    if (config.enableSubscriptionNotifications) {
+      console.error('[subscription] ENABLE_SUBSCRIPTION_NOTIFICATIONS=true is incompatible with TELEGRAM_REPLY_MODE=webhook; cannot send subscription notices; no messages sent');
+      return;
+    }
+    console.log('[subscription] notifications disabled');
+    return;
+  }
+
   if (!config.enableSubscriptionNotifications) {
     console.log('[subscription] notifications disabled');
     return;
@@ -207,6 +235,25 @@ async function bootstrap(
   setScheduler(task);
   if (stopped()) task.stop();
   console.log('[subscription] hourly scheduler started');
+}
+
+async function answerByWebhook(
+  res: Response,
+  update: NonNullable<ReturnType<typeof parseTelegramUpdate>>,
+  config: AppConfig,
+  fetchImpl: BotDeps['fetchImpl']
+): Promise<void> {
+  try {
+    const reply = await buildWebhookReply(update, config, { fetchImpl });
+    console.log('[webhook] reply', { updateId: update.update_id, method: reply?.method ?? 'none' });
+    if (reply) {
+      res.status(200).json(reply);
+      return;
+    }
+  } catch (error) {
+    console.error('[webhook] reply error', redact(error), { updateId: update.update_id });
+  }
+  if (!res.headersSent) res.status(200).end();
 }
 
 function listen(app: Express, port: number): Promise<http.Server> {

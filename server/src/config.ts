@@ -2,6 +2,8 @@ import path from 'node:path';
 
 const DEFAULT_WEBHOOK_PATH = '/telegram/webhook-9f3k2lQp';
 
+export type TelegramReplyMode = 'api' | 'webhook';
+
 export type AppConfig = {
   botToken: string;
   miniAppUrl: string;
@@ -12,6 +14,7 @@ export type AppConfig = {
   apiUrl: string;
   enableWebhookRegistration: boolean;
   enableSubscriptionNotifications: boolean;
+  replyMode: TelegramReplyMode;
   healthcheckToken: string;
   port: number;
   heroImagePath: string;
@@ -32,6 +35,13 @@ export function isValidWebhookPath(webhookPath: string): boolean {
 
 export function isValidWebhookSecret(secret: string): boolean {
   return /^[A-Za-z0-9_-]{1,256}$/.test(secret);
+}
+
+export function readReplyMode(value: string | undefined): TelegramReplyMode {
+  const mode = (value ?? '').trim().toLowerCase();
+  if (mode === '' || mode === 'api') return 'api';
+  if (mode === 'webhook') return 'webhook';
+  throw new Error('TELEGRAM_REPLY_MODE must be api or webhook');
 }
 
 export function readPort(value: string | undefined): number {
@@ -62,6 +72,7 @@ export function readConfig(env: NodeJS.ProcessEnv, cwd = process.cwd()): AppConf
     apiUrl: (env.API_URL || '').trim(),
     enableWebhookRegistration: isEnabled(env.ENABLE_WEBHOOK_REGISTRATION),
     enableSubscriptionNotifications: isEnabled(env.ENABLE_SUBSCRIPTION_NOTIFICATIONS),
+    replyMode: readReplyMode(env.TELEGRAM_REPLY_MODE),
     healthcheckToken: (env.HEALTHCHECK_TOKEN || '').trim(),
     port: readPort(env.PORT),
     heroImagePath: path.join(cwd, 'server', 'public', 'hero-new.png'),

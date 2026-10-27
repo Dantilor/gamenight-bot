@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
 import test from 'node:test';
 import type { Express } from 'express';
@@ -109,7 +110,21 @@ test('start, play, and ping keep the current welcome and WebApp buttons', async 
     const rendered = telegram.calls.map((call) => `${call.method}\n${call.body}`).join('\n');
     assert.equal(rendered.includes('start ok'), false);
     assert.equal(rendered.includes('api.telegram.org'), false);
-    assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(HERO_CAPTION) && call.body.includes(START_BUTTON_TEXT) && call.body.includes('https://dantilor-telegram-card-game-a2cc.twc1.net')), true);
+    assert.equal(fs.existsSync(config().heroImagePath), true);
+    const startCall = telegram.calls.find((call) => call.method === 'sendMessage' && call.body.includes(START_BUTTON_TEXT));
+    assert.ok(startCall);
+    const startBody = JSON.parse(startCall.body) as {
+      text?: string;
+      parse_mode?: string;
+      photo?: string;
+      reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; web_app?: { url?: string } }>> };
+    };
+    assert.equal(startBody.text, HERO_CAPTION);
+    assert.equal(startBody.parse_mode, 'HTML');
+    assert.equal(startBody.photo, undefined);
+    assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.text, START_BUTTON_TEXT);
+    assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, 'https://dantilor-telegram-card-game-a2cc.twc1.net');
+    assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(START_BUTTON_TEXT)), false);
     assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(HERO_CAPTION) && call.body.includes(PLAY_BUTTON_TEXT)), true);
     assert.equal(telegram.calls.some((call) => call.method === 'sendMessage' && call.body.includes('"text":"pong"')), true);
     assert.equal(rendered.includes('remove_keyboard'), true);

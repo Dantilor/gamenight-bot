@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
@@ -103,6 +104,18 @@ async function post(base: string, body: unknown, secret: string | null = SECRET)
   });
 }
 
+function startReply(chatId: number, buttonText: string | null) {
+  return {
+    method: 'sendMessage',
+    chat_id: chatId,
+    text: HERO_CAPTION,
+    parse_mode: 'HTML',
+    ...(buttonText
+      ? { reply_markup: { inline_keyboard: [[{ text: buttonText, web_app: { url: MINI_APP } }]] } }
+      : {}),
+  };
+}
+
 function photoReply(chatId: number, buttonText: string | null) {
   return {
     method: 'sendPhoto',
@@ -137,22 +150,27 @@ test('webhook commands return one Bot API method and do not call Telegram', asyn
       reply_markup: { remove_keyboard: true },
     });
 
+    assert.equal(fs.existsSync(config().heroImagePath), true);
     const start = await post(server.base, commandUpdate(2, '/start start-payload-9f3', { id: 7, type: 'private' }));
     assert.equal(start.status, 200);
     const startBody = await start.json();
-    assert.deepEqual(startBody, photoReply(7, START_BUTTON_TEXT));
+    assert.deepEqual(startBody, startReply(7, START_BUTTON_TEXT));
+    assert.equal(startBody.method, 'sendMessage');
+    assert.equal('photo' in startBody, false);
     assert.equal(JSON.stringify(startBody).includes('start-payload-9f3'), false);
     assert.equal(JSON.stringify(startBody).includes('token=secret'), false);
+    assert.equal(JSON.stringify(startBody).includes('hero-new.png'), false);
 
     const named = await post(server.base, commandUpdate(3, '/start@GameNightHostBot', { id: 7, type: 'private' }));
-    assert.deepEqual(await named.json(), photoReply(7, START_BUTTON_TEXT));
+    assert.deepEqual(await named.json(), startReply(7, START_BUTTON_TEXT));
 
     const play = await post(server.base, commandUpdate(4, '/play', { id: 11, type: 'private' }));
     assert.deepEqual(await play.json(), photoReply(11, PLAY_BUTTON_TEXT));
 
     const group = await post(server.base, commandUpdate(5, '/start', { id: -100, type: 'group' }));
     const groupBody = await group.json();
-    assert.deepEqual(groupBody, photoReply(-100, null));
+    assert.deepEqual(groupBody, startReply(-100, null));
+    assert.equal(groupBody.method, 'sendMessage');
     assert.equal('reply_markup' in groupBody, false);
 
     const foreign = await post(server.base, commandUpdate(6, '/ping@OtherBot', { id: -100, type: 'supergroup' }));

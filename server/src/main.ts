@@ -196,7 +196,7 @@ async function bootstrap(
 
   if (config.replyMode === 'webhook') {
     if (!publicHeroPhotoUrl(config.publicUrl) || !fs.existsSync(config.heroImagePath)) {
-      console.warn('[webhook] hero photo is not available; /start and /play will use sendMessage');
+      console.warn('[webhook] hero photo is not available; /play will use sendMessage');
     }
     if (config.enableSubscriptionNotifications) {
       console.error('[subscription] ENABLE_SUBSCRIPTION_NOTIFICATIONS=true is incompatible with TELEGRAM_REPLY_MODE=webhook; cannot send subscription notices; no messages sent');

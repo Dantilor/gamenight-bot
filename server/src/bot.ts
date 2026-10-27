@@ -46,7 +46,7 @@ export function createBot(deps: BotDeps): Telegraf {
 
   bot.start(async (ctx) => {
     console.log('[bot] /start', { id: ctx.from?.id });
-    await sendHero(ctx, deps.config.heroImagePath, miniAppUrl, START_BUTTON_TEXT);
+    await sendStartText(ctx, miniAppUrl);
   });
 
   bot.command('play', async (ctx) => {
@@ -86,6 +86,19 @@ export async function sendExpiryNotice(bot: Telegraf, telegramId: number): Promi
     throw new Error('Telegram did not confirm the message');
   }
   return message.message_id;
+}
+
+async function sendStartText(ctx: Context, miniAppUrl: string): Promise<void> {
+  const buttonUrl = miniAppUrl.trim();
+  const keyboard = buttonUrl
+    ? Markup.inlineKeyboard([Markup.button.webApp(START_BUTTON_TEXT, buttonUrl)])
+    : undefined;
+  const text = buttonUrl ? HERO_CAPTION : `${HERO_CAPTION}\n\nMINI_APP_URL не задан`;
+  if (keyboard) {
+    await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+    return;
+  }
+  await ctx.reply(text, { parse_mode: 'HTML' });
 }
 
 async function sendHero(ctx: Context, heroImagePath: string, miniAppUrl: string, buttonText: string): Promise<void> {

@@ -71,9 +71,8 @@ export async function buildWebhookReply(
   const command = readCommand(update);
   if (command) {
     if (command.name === 'ping') return pingReply(command.chat);
-    if (command.name === 'start' || command.name === 'play') {
-      return welcomeReply(command.chat, command.name === 'start' ? START_BUTTON_TEXT : PLAY_BUTTON_TEXT, config, fileExists);
-    }
+    if (command.name === 'start') return startReply(command.chat, config);
+    if (command.name === 'play') return welcomeReply(command.chat, PLAY_BUTTON_TEXT, config, fileExists);
     return null;
   }
   const renewal = readRenewal(update);
@@ -87,6 +86,22 @@ function pingReply(chat: ChatRef): WebhookMethodReply {
     chat_id: chat.id,
     text: 'pong',
     reply_markup: { remove_keyboard: true },
+  };
+}
+
+function startReply(
+  chat: ChatRef,
+  config: Pick<AppConfig, 'miniAppUrl'>
+): WebhookMethodReply {
+  const miniAppUrl = usableHttpsUrl(config.miniAppUrl);
+  const button = webAppButton(chat, START_BUTTON_TEXT, miniAppUrl);
+  const text = miniAppUrl ? HERO_CAPTION : `${HERO_CAPTION}\n\n${MISSING_MINI_APP}`;
+  return {
+    method: 'sendMessage',
+    chat_id: chat.id,
+    text,
+    parse_mode: 'HTML',
+    ...(button ? { reply_markup: button } : {}),
   };
 }
 

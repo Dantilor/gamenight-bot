@@ -289,6 +289,7 @@ test('a blocked user is recorded and is not retried', async () => {
 test('Telegram errors classify blocked users and retry delays', () => {
   assert.equal(classifySendError({ response: { error_code: 403, description: 'Forbidden: bot was blocked by the user' } }), 'blocked');
   assert.equal(classifySendError({ response: { error_code: 400, description: 'Bad Request: chat not found' } }), 'blocked');
+  assert.equal(classifySendError({ response: { error_code: 400, description: 'Bad Request: PEER_ID_INVALID' } }), 'blocked');
   assert.equal(classifySendError(new Error('socket hang up')), 'retry');
   assert.equal(retryDelayMs({ response: { error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 2 } } }, 1), 2000);
 });

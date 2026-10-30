@@ -15,6 +15,7 @@ export type AppConfig = {
   enableWebhookRegistration: boolean;
   enableSubscriptionNotifications: boolean;
   replyMode: TelegramReplyMode;
+  broadcastAdminId: number | null;
   healthcheckToken: string;
   port: number;
   heroImagePath: string;
@@ -42,6 +43,15 @@ export function readReplyMode(value: string | undefined): TelegramReplyMode {
   if (mode === '' || mode === 'api') return 'api';
   if (mode === 'webhook') return 'webhook';
   throw new Error('TELEGRAM_REPLY_MODE must be api or webhook');
+}
+
+export function readBroadcastAdminId(value: string | undefined): number | null {
+  const text = (value ?? '').trim();
+  if (!text) return null;
+  if (!/^[1-9]\d{0,15}$/.test(text)) throw new Error('BROADCAST_ADMIN_ID is invalid');
+  const id = Number(text);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('BROADCAST_ADMIN_ID is invalid');
+  return id;
 }
 
 export function readPort(value: string | undefined): number {
@@ -73,6 +83,7 @@ export function readConfig(env: NodeJS.ProcessEnv, cwd = process.cwd()): AppConf
     enableWebhookRegistration: isEnabled(env.ENABLE_WEBHOOK_REGISTRATION),
     enableSubscriptionNotifications: isEnabled(env.ENABLE_SUBSCRIPTION_NOTIFICATIONS),
     replyMode: readReplyMode(env.TELEGRAM_REPLY_MODE),
+    broadcastAdminId: readBroadcastAdminId(env.BROADCAST_ADMIN_ID),
     healthcheckToken: (env.HEALTHCHECK_TOKEN || '').trim(),
     port: readPort(env.PORT),
     heroImagePath: path.join(cwd, 'server', 'public', 'hero-new.png'),

@@ -5,6 +5,8 @@ import { config as loadEnv } from 'dotenv';
 import cron, { type ScheduledTask } from 'node-cron';
 import express, { type ErrorRequestHandler, type Express, type Response } from 'express';
 import type { Telegraf } from 'telegraf';
+import { handleBroadcastTurn, rememberPrivateContact } from './broadcastPanel.js';
+import { resolveBroadcastStore, type BroadcastStore } from './broadcastStore.js';
 import { createBot, sendExpiryNotice, type BotDeps } from './bot.js';
 import { buildWebhookUrl, readConfig, type AppConfig } from './config.js';
 import { closeDb, getConnection, initDb, pingDb } from './db.js';
@@ -18,8 +20,12 @@ export type TelegramRegistrar = {
   setWebhook(url: string, extra?: { secret_token?: string }): Promise<unknown>;
 };
 
-export function createApp(config: AppConfig, deps: Pick<BotDeps, 'fetchImpl'> = {}): { app: Express; bot: ReturnType<typeof createBot> } {
-  const bot = createBot({ config, fetchImpl: deps.fetchImpl });
+export function createApp(
+  config: AppConfig,
+  deps: Pick<BotDeps, 'fetchImpl' | 'broadcastStore' | 'resolveBroadcastStore'> = {}
+): { app: Express; bot: ReturnType<typeof createBot> } {
+  const resolveStore = deps.resolveBroadcastStore ?? (() => resolveBroadcastStore(config.databaseUrl, deps.broadcastStore));
+  const bot = createBot({ config, fetchImpl: deps.fetchImpl, broadcastStore: deps.broadcastStore, resolveBroadcastStore: resolveStore });
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
@@ -74,7 +80,7 @@ export function createApp(config: AppConfig, deps: Pick<BotDeps, 'fetchImpl'> = 
     if (config.replyMode === 'webhook') {
       // One Bot API method is written to this HTTP response. handleUpdate is not used:
       // it calls getMe first, and Telegraf's webhookReply allowlist excludes sendMessage and sendPhoto.
-      await answerByWebhook(res, update, config, deps.fetchImpl);
+      await answerByWebhook(res, update, config, deps.fetchImpl, resolveStore);
       return;
     }
     try {
@@ -241,9 +247,22 @@ async function answerByWebhook(
   res: Response,
   update: NonNullable<ReturnType<typeof parseTelegramUpdate>>,
   config: AppConfig,
-  fetchImpl: BotDeps['fetchImpl']
+  fetchImpl: BotDeps['fetchImpl'],
+  resolveStore: () => Promise<BroadcastStore | null>
 ): Promise<void> {
   try {
+    const store = await resolveStore();
+    await rememberPrivateContact(store, update);
+    const panel = await handleBroadcastTurn(update, {
+      adminId: config.broadcastAdminId,
+      miniAppUrl: config.miniAppUrl,
+      store,
+    });
+    if (panel) {
+      console.log('[webhook] reply', { updateId: update.update_id, method: panel.method });
+      res.status(200).json(panel);
+      return;
+    }
     const reply = await buildWebhookReply(update, config, { fetchImpl });
     console.log('[webhook] reply', { updateId: update.update_id, method: reply?.method ?? 'none' });
     if (reply) {

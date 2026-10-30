@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Input, Markup, Telegraf } from 'telegraf';
 import type { Context } from 'telegraf';
+import { handleBroadcastTurn, rememberPrivateContact, type PanelReply } from './broadcastPanel.js';
+import type { BroadcastStore } from './broadcastStore.js';
 import type { AppConfig } from './config.js';
 import { redact } from './log.js';
 import { fetchPlans, formatTariffs, premiumPageUrl } from './plans.js';
@@ -28,6 +30,8 @@ const heroMessageIds = new Map<number, number>();
 export type BotDeps = {
   config: AppConfig;
   fetchImpl?: typeof fetch;
+  broadcastStore?: BroadcastStore | null;
+  resolveBroadcastStore?: () => Promise<BroadcastStore | null>;
 };
 
 export function createBot(deps: BotDeps): Telegraf {
@@ -46,18 +50,43 @@ export function createBot(deps: BotDeps): Telegraf {
 
   bot.start(async (ctx) => {
     console.log('[bot] /start', { id: ctx.from?.id });
+    await rememberActor(ctx, deps);
     await sendStartText(ctx, miniAppUrl);
   });
 
   bot.command('play', async (ctx) => {
     console.log('[bot] /play', { id: ctx.from?.id });
+    await rememberActor(ctx, deps);
     await sendHero(ctx, deps.config.heroImagePath, miniAppUrl, PLAY_BUTTON_TEXT);
   });
 
   bot.command('ping', async (ctx) => {
     console.log('[bot] /ping', { id: ctx.from?.id });
+    await rememberActor(ctx, deps);
     await ctx.reply('pong', REMOVE_KEYBOARD);
   });
+
+  const panel = async (ctx: Context) => {
+    const store = await openBroadcastStore(deps);
+    const reply = await handleBroadcastTurn(ctx.update as never, {
+      adminId: deps.config.broadcastAdminId,
+      miniAppUrl,
+      store,
+    });
+    if (!reply) return;
+    await sendPanelReply(ctx, reply);
+  };
+  bot.command('admin', panel);
+  bot.command('subscribe', panel);
+  bot.command('unsubscribe', panel);
+  bot.action(/^ba:/, panel);
+  bot.action(/^bc:/, panel);
+  bot.on('text', async (ctx, next) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    if (typeof text === 'string' && text.startsWith('/')) return next();
+    await panel(ctx);
+  });
+  bot.on('photo', panel);
 
   bot.action('renew_subscription', async (ctx) => {
     await ctx.answerCbQuery().catch(() => undefined);
@@ -86,6 +115,32 @@ export async function sendExpiryNotice(bot: Telegraf, telegramId: number): Promi
     throw new Error('Telegram did not confirm the message');
   }
   return message.message_id;
+}
+
+async function openBroadcastStore(deps: BotDeps): Promise<BroadcastStore | null> {
+  if (deps.broadcastStore !== undefined) return deps.broadcastStore;
+  if (!deps.resolveBroadcastStore) return null;
+  return deps.resolveBroadcastStore();
+}
+
+async function rememberActor(ctx: Context, deps: BotDeps): Promise<void> {
+  if (ctx.chat?.type !== 'private' || ctx.chat.id !== ctx.from?.id || !ctx.from) return;
+  await rememberPrivateContact(await openBroadcastStore(deps), ctx.update as never);
+}
+
+async function sendPanelReply(ctx: Context, reply: PanelReply): Promise<void> {
+  if (reply.method === 'sendPhoto' && reply.photo) {
+    await ctx.replyWithPhoto(reply.photo, {
+      caption: reply.caption,
+      parse_mode: 'HTML',
+      ...(reply.reply_markup ? { reply_markup: reply.reply_markup } : {}),
+    });
+    return;
+  }
+  await ctx.reply(reply.text ?? '', {
+    ...(reply.parse_mode ? { parse_mode: reply.parse_mode } : {}),
+    ...(reply.reply_markup ? { reply_markup: reply.reply_markup } : {}),
+  });
 }
 
 async function sendStartText(ctx: Context, miniAppUrl: string): Promise<void> {

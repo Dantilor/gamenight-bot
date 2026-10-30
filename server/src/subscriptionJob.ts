@@ -37,7 +37,7 @@ export function classifySendError(error: unknown): 'blocked' | 'retry' {
   const details = telegramDetails(error);
   const description = details.description;
   if (details.code === 403) return 'blocked';
-  if (/bot was blocked by the user|user is deactivated|chat not found|bot was kicked|have no rights to send/i.test(description)) {
+  if (/bot was blocked by the user|user is deactivated|chat not found|bot was kicked|have no rights to send|user not found|peer_id_invalid|bot can't initiate conversation/i.test(description)) {
     return 'blocked';
   }
   if (details.code === 400 && /forbidden/i.test(description)) return 'blocked';

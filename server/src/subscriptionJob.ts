@@ -44,6 +44,19 @@ export function classifySendError(error: unknown): 'blocked' | 'retry' {
   return 'retry';
 }
 
+/** Telegram's own flood-wait in milliseconds, uncapped. Null when the error is not a rate limit. */
+export function retryAfterMs(error: unknown): number | null {
+  const details = telegramDetails(error);
+  if (details.retryAfter === null && details.code !== 429) return null;
+  return Math.max(1000, (details.retryAfter ?? 1) * 1000);
+}
+
+/** A 400 other than a block (bad markup, bad button URL) fails the same way for every attempt. */
+export function isPermanentRequestError(error: unknown): boolean {
+  const details = telegramDetails(error);
+  return details.code === 400 && classifySendError(error) === 'retry';
+}
+
 export function retryDelayMs(error: unknown, attempt: number): number {
   const retryAfter = telegramDetails(error).retryAfter;
   if (retryAfter !== null) return Math.min(retryAfter * 1000, 30_000);

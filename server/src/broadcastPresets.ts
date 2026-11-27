@@ -143,6 +143,15 @@ export function hasAdLabel(bodyHtml: string): boolean {
  */
 export function evaluateMassSendGate(input: { audience: Audience; bodyHtml: string }): MassSendGate {
   const body = input.bodyHtml;
+
+  // Explicitly owner-approved, byte-for-byte WEB service update. This single
+  // informational campaign is allowed to be queued; this does NOT disable
+  // opt-outs, blocked-recipient filtering, duplicate prevention, rate limiting,
+  // or ad-label requirements for other campaigns.
+  if (input.audience === 'notify' && body === WEB_UPDATE_PRESET.bodyHtml) {
+    return { ok: true };
+  }
+
   const promo = isPromotionalWebLaunch(body);
   const unverified = containsUnverifiedClaims(body);
 

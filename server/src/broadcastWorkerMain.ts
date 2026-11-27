@@ -16,7 +16,7 @@ export type WorkerArgs =
 export const USAGE =
   'Usage: npm run broadcast-worker -- <mode>\n' +
   '  --check             reach Telegram with getMe only; sends nothing\n' +
-  '  --status            read-only: table readiness, audience sizes, queue depth; sends nothing\n' +
+  '  --status            read-only: eligible ads recipients, informational audience, queue depth; sends nothing\n' +
   '  --only-test         send queued TEST campaigns only; a mass queue is never touched\n' +
   '  --send-mass         send test and mass campaigns (use only after the owner approves)\n' +
   '  --max-sends=N       optional cap on messages in this run';
@@ -78,8 +78,12 @@ async function main(): Promise<void> {
 
   if (args.mode === 'status') {
     const store = await openStore(config.databaseUrl);
-    console.log('[broadcast] status (read-only, nothing sent)', {
-      adsConsents: await audienceSize(store, 'ads'),
+    const eligibleAdsRecipients = await audienceSize(store, 'ads');
+    console.log('[broadcast] status (read-only, nothing sent; no Telegram IDs printed)', {
+      eligibleAdsRecipients,
+      note:
+        'eligibleAdsRecipients = contacts with ads_opt_in, without /unsubscribe, without blocked_at. ' +
+        'This is the exact count allowed for the WEB-launch ads announcement.',
       informationalAudience: await audienceSize(store, 'notify'),
       queuedTest: await store.queueDepth('test'),
       queuedMass: await store.queueDepth('mass'),

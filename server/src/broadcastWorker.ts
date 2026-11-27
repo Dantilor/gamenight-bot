@@ -39,6 +39,7 @@ export type WorkerReport = {
   failed: number;
   retried: number;
   stopped: number;
+  skipped: number;
   rateLimited: number;
   aborted: boolean;
 };
@@ -57,6 +58,7 @@ export async function runBroadcastWorker(
     failed: 0,
     retried: 0,
     stopped: 0,
+    skipped: 0,
     rateLimited: 0,
     aborted: false,
   };
@@ -111,6 +113,16 @@ async function deliverOne(
   sleep: (ms: number) => Promise<void>,
   report: WorkerReport
 ): Promise<'done' | 'rate-limited'> {
+  // Mass campaigns re-check consent / opt-out / block right before the Telegram call.
+  // Test campaigns always go to the admin and skip this gate so a preview still works.
+  if (claimed.kind === 'mass') {
+    const eligible = await store.isStillEligible(claimed.telegramId, claimed.audience);
+    if (!eligible) {
+      await store.markFailed(claimed.deliveryId, 'recipient no longer eligible');
+      report.skipped += 1;
+      return 'done';
+    }
+  }
   try {
     const messageId = await sender.send({
       chatId: claimed.telegramId,

@@ -1,4 +1,5 @@
 import { isButtonMode, type ButtonMode } from './broadcastButtons.js';
+import { evaluateMassSendGate } from './broadcastPresets.js';
 import { getConnection, initDb } from './db.js';
 import { redact } from './log.js';
 import type { SqlConnection, SqlQuery } from './premiumReader.js';
@@ -21,13 +22,15 @@ export type BroadcastDraft = {
 
 export type QueueResult =
   | { ok: true; id: number; recipients: number; duplicate: boolean }
-  | { ok: false; reason: 'mismatch' | 'empty' | 'no-text' | 'busy' | 'missing' };
+  | { ok: false; reason: 'mismatch' | 'empty' | 'no-text' | 'busy' | 'missing' | 'refused' };
 
 export type ClaimedDelivery = {
   deliveryId: number;
   campaignId: number;
   telegramId: number;
   attemptCount: number;
+  kind: CampaignKind;
+  audience: Audience;
   bodyHtml: string;
   photoFileId: string | null;
   includeButton: boolean;
@@ -50,7 +53,8 @@ export type BroadcastStore = {
   setNotifyOptOut(telegramId: number, chatId: number, optedOut: boolean): Promise<void>;
   setAdsOptIn(telegramId: number, chatId: number, optedIn: boolean): Promise<void>;
   markContactBlocked(telegramId: number): Promise<void>;
-  countRecipients(audience: Audience): Promise<number>;
+  /** With bodyHtml, people who already received this exact mass text are not counted. */
+  countRecipients(audience: Audience, bodyHtml?: string): Promise<number>;
   getDraft(adminId: number): Promise<BroadcastDraft>;
   saveDraft(draft: BroadcastDraft): Promise<void>;
   queueTest(adminId: number, draft: BroadcastDraft): Promise<QueueResult>;
@@ -60,6 +64,8 @@ export type BroadcastStore = {
   releaseStaleSending(): Promise<number>;
   claimNext(maxAttempts: number, kind?: CampaignKind): Promise<ClaimedDelivery | null>;
   queueDepth(kind?: CampaignKind): Promise<number>;
+  /** Re-check consent / opt-out / block right before a real send. */
+  isStillEligible(telegramId: number, audience: Audience): Promise<boolean>;
   campaignIsStopped(campaignId: number): Promise<boolean>;
   releaseClaim(deliveryId: number): Promise<void>;
   markSent(deliveryId: number, messageId: number): Promise<boolean>;
@@ -87,6 +93,8 @@ type ClaimRow = {
   campaign_id: string | number;
   telegram_id: string | number;
   attempt_count: string | number;
+  kind: string;
+  audience: string;
   body_html: string;
   photo_file_id: string | null;
   include_button: boolean;
@@ -178,10 +186,13 @@ export function createBroadcastStore(connection: SqlConnection): BroadcastStore 
     async markContactBlocked(telegramId) {
       await query(blockedContactSql, [telegramId]);
     },
-    async countRecipients(audience) {
+    async countRecipients(audience, bodyHtml) {
       const source = audienceSource(audience);
       if (!source) return 0;
-      const result = await query<CountRow>(`SELECT count(*)::int AS count ${source.from}`);
+      const result =
+        bodyHtml === undefined
+          ? await query<CountRow>(`SELECT count(*)::int AS count ${source.from}`)
+          : await query<CountRow>(`SELECT count(*)::int AS count ${source.from} ${notYetDeliveredSql(source.idColumn, '$1')}`, [bodyHtml]);
       return asCount(result.rows[0]?.count);
     },
     async getDraft(adminId) {
@@ -275,6 +286,33 @@ export function createBroadcastStore(connection: SqlConnection): BroadcastStore 
     },
     async claimNext(maxAttempts, kind) {
       return connection.withTransaction((tx) => claimOne(tx, maxAttempts, kind ?? null));
+    },
+    async isStillEligible(telegramId, audience) {
+      if (audience === 'ads') {
+        const result = await query<{ ok: number }>(
+          `SELECT 1 AS ok FROM bot_broadcast_contacts
+           WHERE telegram_id = $1::bigint
+             AND ads_opt_in
+             AND NOT notify_opt_out
+             AND blocked_at IS NULL
+           LIMIT 1`,
+          [telegramId]
+        );
+        return result.rows.length > 0;
+      }
+      if (audience !== 'notify') return false;
+      const result = await query<{ ok: number }>(
+        `SELECT 1 AS ok FROM users u
+         WHERE u.telegram_id = $1::bigint
+           AND NOT EXISTS (
+             SELECT 1 FROM bot_broadcast_contacts c
+             WHERE c.telegram_id = u.telegram_id
+               AND (c.notify_opt_out OR c.blocked_at IS NOT NULL)
+           )
+         LIMIT 1`,
+        [telegramId]
+      );
+      return result.rows.length > 0;
     },
     async queueDepth(kind) {
       const result = await query<CountRow>(
@@ -378,6 +416,21 @@ function audienceSource(audience: string): { idColumn: string; from: string } | 
   };
 }
 
+/**
+ * Across campaigns: nobody who already received (or is being sent) this exact mass text
+ * is queued again, even under a new confirmation token or after a stop and restart.
+ */
+function notYetDeliveredSql(idColumn: string, bodyParam: string): string {
+  return `AND NOT EXISTS (
+    SELECT 1 FROM bot_broadcast_deliveries pd
+    JOIN bot_broadcast_campaigns pc ON pc.id = pd.campaign_id
+    WHERE pc.kind = 'mass'
+      AND pc.body_html = ${bodyParam}::text
+      AND pd.telegram_id = ${idColumn}
+      AND pd.status IN ('sent', 'sending')
+  )`;
+}
+
 async function insertTest(query: SqlQuery, adminId: number, draft: BroadcastDraft): Promise<QueueResult> {
   const active = await query<IdRow>(
     `SELECT id FROM bot_broadcast_campaigns
@@ -427,9 +480,14 @@ async function insertMass(query: SqlQuery, adminId: number, token: string): Prom
   const draft = draftResult.rows[0];
   if (!draft || draft.confirm_token !== token || draft.step !== 'confirm') return { ok: false, reason: 'mismatch' };
   if (!draft.body_html.trim()) return { ok: false, reason: 'no-text' };
+  const gate = evaluateMassSendGate({ audience: draft.audience, bodyHtml: draft.body_html });
+  if (!gate.ok) return { ok: false, reason: 'refused' };
   const source = audienceSource(draft.audience);
   if (!source) return { ok: false, reason: 'empty' };
-  const recipients = await query<CountRow>(`SELECT count(*)::int AS count ${source.from}`);
+  const recipients = await query<CountRow>(
+    `SELECT count(*)::int AS count ${source.from} ${notYetDeliveredSql(source.idColumn, '$1')}`,
+    [draft.body_html]
+  );
   const count = asCount(recipients.rows[0]?.count);
   if (count === 0) return { ok: false, reason: 'empty' };
   const created = await query<IdRow>(
@@ -453,8 +511,9 @@ async function insertMass(query: SqlQuery, adminId: number, token: string): Prom
   await query(
     `INSERT INTO bot_broadcast_deliveries (campaign_id, telegram_id, status)
      SELECT $1::bigint, ${source.idColumn}, 'pending'
-     ${source.from}`,
-    [id]
+     ${source.from}
+     ${notYetDeliveredSql(source.idColumn, '$2')}`,
+    [id, draft.body_html]
   );
   await query(
     `UPDATE bot_broadcast_drafts
@@ -465,7 +524,7 @@ async function insertMass(query: SqlQuery, adminId: number, token: string): Prom
   return { ok: true, id, recipients: count, duplicate: false };
 }
 
-async function claimOne(query: SqlQuery, maxAttempts: number, kind: CampaignKind | null): Promise<ClaimedDelivery | null> {
+async function claimOne(query: SqlQuery, maxAttempts: number, kindFilter: CampaignKind | null): Promise<ClaimedDelivery | null> {
   const result = await query<ClaimRow>(
     `UPDATE bot_broadcast_deliveries d
      SET status = 'sending', attempt_count = d.attempt_count + 1, updated_at = now()
@@ -482,12 +541,14 @@ async function claimOne(query: SqlQuery, maxAttempts: number, kind: CampaignKind
        LIMIT 1
      )
      RETURNING d.id, d.campaign_id, d.telegram_id, d.attempt_count,
+       (SELECT kind FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS kind,
+       (SELECT audience FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS audience,
        (SELECT body_html FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS body_html,
        (SELECT photo_file_id FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS photo_file_id,
        (SELECT include_button FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS include_button,
        (SELECT button_mode FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS button_mode,
        (SELECT web_url FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS web_url`,
-    [maxAttempts, kind]
+    [maxAttempts, kindFilter]
   );
   const row = result.rows[0];
   if (!row) return null;
@@ -497,11 +558,15 @@ async function claimOne(query: SqlQuery, maxAttempts: number, kind: CampaignKind
      WHERE id = $1::bigint AND status = 'queued'`,
     [row.campaign_id]
   );
+  const campaignKind: CampaignKind = row.kind === 'mass' ? 'mass' : 'test';
+  const campaignAudience: Audience = row.audience === 'ads' ? 'ads' : 'notify';
   return {
     deliveryId: asNumber(row.id),
     campaignId: asNumber(row.campaign_id),
     telegramId: asNumber(row.telegram_id),
     attemptCount: asNumber(row.attempt_count),
+    kind: campaignKind,
+    audience: campaignAudience,
     bodyHtml: row.body_html,
     photoFileId: row.photo_file_id,
     includeButton: row.include_button,

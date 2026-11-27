@@ -6,7 +6,7 @@ import {
   httpsUrl,
   nextButtonMode,
 } from './broadcastButtons.js';
-import { hasAdLabel, isWebLaunchText, WEB_LAUNCH_PRESET } from './broadcastPresets.js';
+import { evaluateMassSendGate, isPromotionalWebLaunch, WEB_LAUNCH_PRESET, WEB_UPDATE_PRESET } from './broadcastPresets.js';
 import type { BroadcastDraft, BroadcastStore } from './broadcastStore.js';
 import { redact } from './log.js';
 import { checkTelegramHtml } from './telegramHtml.js';
@@ -107,6 +107,7 @@ async function adminTurn(
   if (action === 'preview') return preview(actor, draft, deps.miniAppUrl);
   if (action === 'btn') return cycleButtons(actor, draft, store);
   if (action === 'preset') return loadPreset(actor, draft, store);
+  if (action === 'update') return loadPreset(actor, draft, store, 'update');
   if (action === 'test') return queueTest(actor, draft, store);
   if (action === 'send') return askConfirm(actor, draft, store);
   if (action === 'stats') return showStats(actor, store);
@@ -208,8 +209,13 @@ async function cycleButtons(actor: Actor, draft: BroadcastDraft, store: Broadcas
   return showMenu(actor, draft, false, `Кнопки: ${describeButtonMode(draft.buttonMode)}. Проверьте их в предпросмотре.`);
 }
 
-async function loadPreset(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
-  const preset = WEB_LAUNCH_PRESET;
+async function loadPreset(
+  actor: Actor,
+  draft: BroadcastDraft,
+  store: BroadcastStore,
+  kind: 'promo' | 'update' = 'promo'
+): Promise<PanelReply> {
+  const preset = kind === 'update' ? WEB_UPDATE_PRESET : WEB_LAUNCH_PRESET;
   if (draft.photoFileId) {
     const html = checkTelegramHtml(preset.bodyHtml);
     if (!html.ok || html.visibleLength > CAPTION_LIMIT) {
@@ -228,16 +234,9 @@ async function loadPreset(actor: Actor, draft: BroadcastDraft, store: BroadcastS
     actor,
     draft,
     false,
-    'Шаблон «Запуск WEB» загружен: аудитория — реклама, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
-  );
-}
-
-function claimsBlock(draft: BroadcastDraft): string | null {
-  if (!isWebLaunchText(draft.bodyHtml) || WEB_LAUNCH_PRESET.claimsVerified) return null;
-  return (
-    'Эту рассылку нельзя поставить в очередь: в шаблоне есть утверждения, которые не подтверждены продуктом:\n' +
-    WEB_LAUNCH_PRESET.claims.map((claim) => `• ${claim}`).join('\n') +
-    '\nИсправьте текст или подтвердите проверку в коде. Тест себе отправить можно.'
+    kind === 'update'
+      ? 'Шаблон «Обновление: веб-версия» загружен: аудитория — информация, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
+      : 'Шаблон «Запуск WEB» загружен: аудитория — реклама, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
   );
 }
 
@@ -256,17 +255,27 @@ async function queueTest(actor: Actor, draft: BroadcastDraft, store: BroadcastSt
 
 async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
   if (!draft.bodyHtml.trim()) return textReply(actor.chatId, 'Сначала создайте текст. Рассылка не создана.');
-  const blocked = claimsBlock(draft);
-  if (blocked) return textReply(actor.chatId, blocked);
-  if (isWebLaunchText(draft.bodyHtml) && draft.audience !== 'ads') {
-    return textReply(actor.chatId, 'Этот текст рекламный и идёт только аудитории «реклама» с предварительным согласием. Рассылка не создана.');
-  }
+  const gate = evaluateMassSendGate(draft);
+  if (!gate.ok) return textReply(actor.chatId, gate.reason);
   let recipients: number;
   try {
-    recipients = await store.countRecipients(draft.audience);
+    recipients = await store.countRecipients(draft.audience, draft.bodyHtml);
   } catch (error) {
     console.error('[broadcast] recipients were not counted', redact(error));
     return textReply(actor.chatId, 'Список получателей не прочитан. Рассылка не создана и сообщения не отправлялись.');
+  }
+  if (draft.audience === 'ads' && recipients === 0) {
+    return textReply(
+      actor.chatId,
+      'Согласий на рекламу пока нет. Получателей: 0. Рассылка не создана.\n' +
+        'Безопасный вариант — добровольная подписка через /subscribe, без изменения уже данных согласий.'
+    );
+  }
+  if (draft.audience === 'notify' && recipients === 0) {
+    return textReply(
+      actor.chatId,
+      'Получателей: 0. Все доступные пользователи уже получили этот текст или недоступны (отписка, блокировка). Рассылка не создана.'
+    );
   }
   const token = crypto.randomBytes(6).toString('hex');
   draft.step = 'confirm';
@@ -275,41 +284,35 @@ async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastS
   const audience = draft.audience === 'ads'
     ? 'реклама. В очередь попадут только те, кто заранее разрешил рекламу.'
     : 'информация. Берутся Telegram ID из users, кроме отказавшихся и недоступных.';
-  const warnings: string[] = [];
-  if (draft.audience === 'ads' && !hasAdLabel(draft.bodyHtml)) {
-    warnings.push('В тексте нет пометки «Реклама» и данных рекламодателя. Проверьте требования закона о рекламе до подтверждения.');
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [
+    [{ text: '✅ Подтвердить', callback_data: `ba:go:${token}` }],
+  ];
+  if (!isPromotionalWebLaunch(draft.bodyHtml)) {
+    keyboard.push([{ text: draft.audience === 'ads' ? '🔔 Сделать информацией' : '📣 Сделать рекламой', callback_data: 'ba:aud' }]);
   }
-  if (draft.audience === 'ads' && recipients === 0) {
-    warnings.push('Согласий на рекламу пока нет. Подтверждение не создаст очередь.');
-  }
+  keyboard.push([{ text: '← Назад', callback_data: 'ba:menu' }]);
   return textReply(
     actor.chatId,
     `Получателей: ${recipients}.\nАудитория: ${audience}\nКнопки: ${describeButtonMode(draft.buttonMode)}.\n` +
-      (warnings.length > 0 ? `${warnings.map((line) => `⚠️ ${line}`).join('\n')}\n` : '') +
       'Это ещё не отправка. Подтверждение только ставит сообщения в очередь.\n' +
+      'Перед каждой фактической отправкой worker ещё раз проверит согласие и блокировку.\n' +
       'Доставка будет засчитана после message_id от Telegram.',
-    {
-      inline_keyboard: [
-        [{ text: '✅ Подтвердить', callback_data: `ba:go:${token}` }],
-        [{ text: draft.audience === 'ads' ? '🔔 Сделать информацией' : '📣 Сделать рекламой', callback_data: 'ba:aud' }],
-        [{ text: '← Назад', callback_data: 'ba:menu' }],
-      ],
-    }
+    { inline_keyboard: keyboard }
   );
 }
 
 async function confirm(actor: Actor, draft: BroadcastDraft, token: string, store: BroadcastStore): Promise<PanelReply> {
-  const blocked = claimsBlock(draft);
-  if (blocked) return textReply(actor.chatId, blocked);
-  if (isWebLaunchText(draft.bodyHtml) && draft.audience !== 'ads') {
-    return textReply(actor.chatId, 'Этот текст рекламный и идёт только аудитории «реклама». Рассылка не создана.');
-  }
+  const gate = evaluateMassSendGate(draft);
+  if (!gate.ok) return textReply(actor.chatId, gate.reason);
   let result: Awaited<ReturnType<BroadcastStore['queueMass']>>;
   try {
     result = await store.queueMass(actor.userId, token);
   } catch (error) {
     console.error('[broadcast] recipients were not queued', redact(error));
     return textReply(actor.chatId, 'Список получателей не прочитан. Рассылка не создана и сообщения не отправлялись.');
+  }
+  if (!result.ok && result.reason === 'refused') {
+    return textReply(actor.chatId, 'Рассылка отклонена защитой рекламы. Очередь не создана.');
   }
   if (!result.ok && result.reason === 'empty') {
     const text = draft.audience === 'ads'
@@ -333,6 +336,12 @@ async function confirm(actor: Actor, draft: BroadcastDraft, token: string, store
 
 async function toggleAudience(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
   if (draft.step !== 'confirm' || !draft.confirmToken) return showMenu(actor, draft, false);
+  if (isPromotionalWebLaunch(draft.bodyHtml) && draft.audience === 'ads') {
+    return textReply(
+      actor.chatId,
+      'Рекламный анонс сайта нельзя переключить на информационную аудиторию. Рассылка не изменена.'
+    );
+  }
   draft.audience = draft.audience === 'ads' ? 'notify' : 'ads';
   return askConfirm(actor, draft, store);
 }
@@ -410,7 +419,8 @@ function menuKeyboard(): InlineMarkup {
   return {
     inline_keyboard: [
       [{ text: '📝 Создать рассылку', callback_data: 'ba:new' }],
-      [{ text: '📋 Шаблон: запуск WEB', callback_data: 'ba:preset' }],
+      [{ text: '📋 Шаблон: обновление (уведомление)', callback_data: 'ba:update' }],
+      [{ text: '📋 Шаблон: запуск WEB (реклама)', callback_data: 'ba:preset' }],
       [{ text: '🖼 Добавить фотографию', callback_data: 'ba:photo' }],
       [{ text: '🔘 Кнопки: сайт / Mini App / обе', callback_data: 'ba:btn' }],
       [{ text: '👀 Предпросмотр', callback_data: 'ba:preview' }],
@@ -449,7 +459,7 @@ function actionOf(callback: string | null): string | null {
     const token = action.slice(3);
     return /^[a-f0-9]{12}$/.test(token) ? action : null;
   }
-  if (['menu', 'new', 'photo', 'preview', 'test', 'send', 'stats', 'stop', 'cancel', 'aud', 'btn', 'preset'].includes(action)) return action;
+  if (['menu', 'new', 'photo', 'preview', 'test', 'send', 'stats', 'stop', 'cancel', 'aud', 'btn', 'preset', 'update'].includes(action)) return action;
   return null;
 }
 

@@ -11,7 +11,16 @@ import {
   nextButtonMode,
 } from '../src/broadcastButtons.js';
 import { handleBroadcastTurn } from '../src/broadcastPanel.js';
-import { WEB_LAUNCH_PRESET, WEB_LAUNCH_URL, hasAdLabel, isWebLaunchText } from '../src/broadcastPresets.js';
+import {
+  WEB_LAUNCH_PRESET,
+  WEB_LAUNCH_URL,
+  WEB_UPDATE_PRESET,
+  containsUnverifiedClaims,
+  evaluateMassSendGate,
+  hasAdLabel,
+  isPromotionalWebLaunch,
+  isWebLaunchText,
+} from '../src/broadcastPresets.js';
 import { createBroadcastStore, type BroadcastStore } from '../src/broadcastStore.js';
 import { DEFAULT_MIN_INTERVAL_MS, runBroadcastWorker, type OutboundMessage, type OutboundSender } from '../src/broadcastWorker.js';
 import { parseWorkerArgs } from '../src/broadcastWorkerMain.js';
@@ -283,12 +292,61 @@ test('mass queueing of the unverified preset text is blocked, tokens included, a
     assert.match(ask?.text ?? '', /Колесо фортуны/);
     assert.equal(tokenOf(ask), '');
     const forged = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:go:aaaaaaaaaaaa'), deps(store));
-    assert.match(forged?.text ?? '', /нельзя поставить в очередь/);
+    assert.match(forged?.text ?? '', /нельзя поставить в очередь|не создана|не принято/);
     assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
     // The owner can still test the exact text on themselves.
     const test = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:test'), deps(store));
     assert.match(test?.text ?? '', /только для Telegram ID 434230321/);
     assert.equal(await count(query, 'bot_broadcast_deliveries'), 1);
+  });
+});
+
+test('a small text edit or notify switch cannot bypass the ads gate', async () => {
+  assert.equal(isPromotionalWebLaunch(WEB_LAUNCH_PRESET.bodyHtml), true);
+  const edited = WEB_LAUNCH_PRESET.bodyHtml.replace('Колесо фортуны', 'Колесо удачи');
+  assert.equal(isWebLaunchText(edited), false);
+  assert.equal(isPromotionalWebLaunch(edited), true);
+  assert.equal(containsUnverifiedClaims(edited), true);
+  assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: edited }).ok, false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: edited }).ok, false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_LAUNCH_PRESET.bodyHtml }).ok, false);
+
+  await withStore(async (store, query) => {
+    await consent(store, query, 511, 100);
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, edited), deps(store));
+    const draft = await store.getDraft(ADMIN);
+    draft.audience = 'notify';
+    await store.saveDraft(draft);
+    const ask = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    assert.equal(tokenOf(ask), '');
+    assert.match(ask?.text ?? '', /рекламный|нельзя поставить в очередь|информаци/i);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
+
+    // Even with a confirm token forged into the draft, queueMass refuses.
+    draft.step = 'confirm';
+    draft.confirmToken = 'bbbbbbbbbbbb';
+    draft.audience = 'ads';
+    draft.bodyHtml = `${edited}\n\nРеклама.`;
+    await store.saveDraft(draft);
+    const refused = await store.queueMass(ADMIN, 'bbbbbbbbbbbb');
+    assert.deepEqual(refused, { ok: false, reason: 'refused' });
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
+  });
+});
+
+test('missing ad label hard-blocks any ads mass campaign', async () => {
+  assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: 'Просто текст без маркировки' }).ok, false);
+  assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: 'Реклама. Короткий безопасный текст' }).ok, true);
+  await withStore(async (store, query) => {
+    await consent(store, query, 521, 10);
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, 'Просто текст'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    const ads = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:aud'), deps(store));
+    assert.equal(tokenOf(ads), '');
+    assert.match(ads?.text ?? '', /пометки «Реклама»/);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
   });
 });
 
@@ -340,15 +398,16 @@ test('ads audience takes only consenting, not unsubscribed, not blocked contacts
   });
 });
 
-test('ads confirmation warns when the text has no ad label and when there are no consents', async () => {
-  await withStore(async (store) => {
+test('ads with zero consents refuses the queue without creating a campaign', async () => {
+  await withStore(async (store, query) => {
+    await query('INSERT INTO users (telegram_id) VALUES (4001)');
     await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
-    await handleBroadcastTurn(textUpdate(2, ADMIN, 'Просто текст'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, 'Реклама. Короткий безопасный текст'), deps(store));
     await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
     const ads = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:aud'), deps(store));
-    assert.match(ads?.text ?? '', /нет пометки «Реклама»/);
+    assert.equal(tokenOf(ads), '');
     assert.match(ads?.text ?? '', /Согласий на рекламу пока нет/);
-    assert.match(ads?.text ?? '', /Получателей: 0\./);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
   });
 });
 
@@ -409,6 +468,70 @@ test('--only-test style runs never touch a mass queue', async () => {
     const all = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(all.sent, 1);
     assert.deepEqual(sent, [801]);
+  });
+});
+
+test('mass send re-checks consent before Telegram and skips revoked recipients', async () => {
+  await withStore(async (store, query) => {
+    await consent(store, query, 901, 10);
+    await consent(store, query, 902, 20);
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, 'Реклама. Текст'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    const ads = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:aud'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(5, ADMIN, tokenOf(ads)), deps(store));
+    assert.equal(await store.queueDepth('mass'), 2);
+
+    await handleBroadcastTurn(textUpdate(30, 902, '/unsubscribe'), deps(store));
+    assert.equal(await store.isStillEligible(902, 'ads'), false);
+    assert.equal(await store.isStillEligible(901, 'ads'), true);
+
+    const sent: number[] = [];
+    const sender: OutboundSender = {
+      async send(message) {
+        sent.push(message.chatId);
+        return 33;
+      },
+    };
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    assert.equal(report.sent, 1);
+    assert.equal(report.skipped, 1);
+    assert.deepEqual(sent, [901]);
+    const rows = await query<{ telegram_id: string | number; status: string }>(
+      'SELECT telegram_id, status FROM bot_broadcast_deliveries ORDER BY telegram_id'
+    );
+    assert.equal(Number(rows.rows[0]?.telegram_id), 901);
+    assert.equal(rows.rows[0]?.status, 'sent');
+    assert.equal(Number(rows.rows[1]?.telegram_id), 902);
+    assert.equal(rows.rows[1]?.status, 'failed');
+  });
+});
+
+test('stopping a mass campaign still prevents delivery after the eligibility check', async () => {
+  await withStore(async (store, query) => {
+    await consent(store, query, 911, 10);
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, 'Реклама. Текст'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    const ads = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:aud'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(5, ADMIN, tokenOf(ads)), deps(store));
+    await handleBroadcastTurn(callbackUpdate(6, ADMIN, 'ba:stop'), deps(store));
+    const sender: OutboundSender = {
+      async send() {
+        throw new Error('must not send');
+      },
+    };
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    // A stopped campaign is no longer claimable (status not queued/running), so nothing is sent
+    // and pending rows stay pending. Duplicate confirm tokens still cannot create a second campaign.
+    assert.equal(report.sent, 0);
+    assert.equal(report.skipped, 0);
+    assert.equal(await store.queueDepth('mass'), 0);
+    const row = await query<{ status: string }>('SELECT status FROM bot_broadcast_deliveries');
+    assert.equal(row.rows[0]?.status, 'pending');
+    const again = await handleBroadcastTurn(callbackUpdate(7, ADMIN, tokenOf(ads)), deps(store));
+    assert.match(again?.text ?? '', /Повторно получатели не добавлены|не создана|не принято|нельзя/);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 1);
   });
 });
 
@@ -553,4 +676,61 @@ test('the web launch module is not wired into the webhook process', () => {
   assert.equal(main.includes('runBroadcastWorker'), false);
   assert.equal(isWebLaunchText(WEB_LAUNCH_PRESET.bodyHtml), true);
   assert.equal(isWebLaunchText(`${WEB_LAUNCH_PRESET.bodyHtml} `), false);
+});
+
+test('neutral update text is valid HTML with no promo markers or unverified claims', () => {
+  const html = checkTelegramHtml(WEB_UPDATE_PRESET.bodyHtml);
+  assert.equal(html.ok, true);
+  if (html.ok) assert.ok(html.visibleLength <= 1024);
+  assert.equal(isPromotionalWebLaunch(WEB_UPDATE_PRESET.bodyHtml), false);
+  assert.equal(containsUnverifiedClaims(WEB_UPDATE_PRESET.bodyHtml), false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_UPDATE_PRESET.bodyHtml }).ok, true);
+  assert.match(WEB_UPDATE_PRESET.bodyHtml, /\/unsubscribe/);
+  for (const forbidden of [/колесо/i, /\b16\b/, /15\s*000/, /без vpn/i]) {
+    assert.equal(forbidden.test(WEB_UPDATE_PRESET.bodyHtml), false, String(forbidden));
+  }
+  // The advertising text still cannot be pushed to the informational audience.
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_LAUNCH_PRESET.bodyHtml }).ok, false);
+});
+
+test('update notice goes to notify audience only, skips unsubscribed and blocked, never twice', async () => {
+  await withStore(async (store, query) => {
+    for (const id of [1001, 1002, 1003, 1004]) await query('INSERT INTO users (telegram_id) VALUES ($1::bigint)', [id]);
+    await handleBroadcastTurn(textUpdate(10, 1002, '/unsubscribe'), deps(store));
+    await store.markContactBlocked(1003);
+
+    const loaded = await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
+    assert.match(loaded?.text ?? '', /аудитория — информация/);
+    const preview = await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:preview'), deps(store));
+    assert.equal(preview?.text, WEB_UPDATE_PRESET.bodyHtml);
+    assert.equal(buttons(preview).length, 2);
+
+    const ask = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    assert.match(ask?.text ?? '', /Получателей: 2\./);
+    const confirmed = await handleBroadcastTurn(callbackUpdate(4, ADMIN, tokenOf(ask)), deps(store));
+    assert.match(confirmed?.text ?? '', /2 сообщений/);
+    const campaign = await query<{ audience: string; kind: string }>('SELECT audience, kind FROM bot_broadcast_campaigns');
+    assert.deepEqual(campaign.rows[0], { audience: 'notify', kind: 'mass' });
+
+    // One of the two unsubscribes after queueing: the worker re-checks right before the send.
+    await handleBroadcastTurn(textUpdate(11, 1004, '/unsubscribe'), deps(store));
+    const sent: number[] = [];
+    const sender: OutboundSender = {
+      async send(message) {
+        sent.push(message.chatId);
+        return 70 + sent.length;
+      },
+    };
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    assert.deepEqual(sent, [1001]);
+    assert.equal(report.sent, 1);
+    assert.equal(report.skipped, 1);
+
+    // Same text again: the person who already got it is not queued, nothing else is left.
+    await handleBroadcastTurn(callbackUpdate(20, ADMIN, 'ba:update'), deps(store));
+    const again = await handleBroadcastTurn(callbackUpdate(21, ADMIN, 'ba:send'), deps(store));
+    assert.equal(tokenOf(again), '');
+    assert.match(again?.text ?? '', /Получателей: 0/);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 1);
+  });
 });

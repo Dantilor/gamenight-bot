@@ -242,7 +242,7 @@ async function loadPreset(
     false,
     kind === 'update'
       ? 'Шаблон «Обновление WEB-версии» загружен: аудитория — информация, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.' +
-        (findUnverifiedClaims(preset.bodyHtml).length > 0
+        (!evaluateMassSendGate({ audience: preset.audience, bodyHtml: preset.bodyHtml }).ok
           ? `\nМассовая отправка заблокирована, пока не подтверждено: ${findUnverifiedClaims(preset.bodyHtml).join('; ')}. Тест себе доступен.`
           : '')
       : 'Шаблон «Запуск WEB» загружен: аудитория — реклама, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'

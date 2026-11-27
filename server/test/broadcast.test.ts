@@ -8,7 +8,7 @@ import type { Telegraf } from 'telegraf';
 import { BROADCAST_OPEN_BUTTON, handleBroadcastTurn } from '../src/broadcastPanel.js';
 import { createBroadcastStore, type BroadcastStore } from '../src/broadcastStore.js';
 import { checkTelegramApi, createTelegramSender, runBroadcastWorker, type OutboundSender } from '../src/broadcastWorker.js';
-import { PLAY_BUTTON_TEXT } from '../src/bot.js';
+import { PLAY_BUTTON_TEXT, SITE_BUTTON_TEXT, SITE_URL, START_BUTTON_TEXT } from '../src/bot.js';
 import { readConfig, type AppConfig } from '../src/config.js';
 import { createApp } from '../src/main.js';
 import { assertMigrationIsSafe } from '../src/migrationSql.js';
@@ -335,6 +335,10 @@ test('webhook mode keeps start and answers admin without calling Telegram', asyn
       assert.equal(startBody.method, 'sendMessage');
       assert.equal('photo' in startBody, false);
       assert.equal(JSON.stringify(startBody).includes('/subscribe'), false);
+      assert.match(startBody.text, /GameNight Host теперь и в браузере/);
+      assert.equal(startBody.reply_markup.inline_keyboard[0][0].text, START_BUTTON_TEXT);
+      assert.equal(startBody.reply_markup.inline_keyboard[0][0].web_app.url, MINI_APP);
+      assert.deepEqual(startBody.reply_markup.inline_keyboard[1], [{ text: SITE_BUTTON_TEXT, url: SITE_URL }]);
 
       const stranger = await post(server.base, textUpdate(2, OTHER, '/admin'));
       assert.equal((await stranger.json()).text, 'Команда недоступна.');
@@ -368,6 +372,14 @@ test('api mode keeps start as text and limits the test send to the admin', async
       assert.equal(adminCall.body.includes(`"chat_id":${OTHER}`), false);
       assert.match(rendered, /Ваш вечер начинается прямо сейчас/);
       assert.equal(rendered.includes('/subscribe'), false);
+      const startCall = telegram.calls.find((call) => call.method === 'sendMessage' && call.body.includes(START_BUTTON_TEXT));
+      assert.ok(startCall);
+      const startBody = JSON.parse(startCall.body) as { text: string; reply_markup: { inline_keyboard: Array<Array<{ text: string; url?: string; web_app?: { url: string } }>> } };
+      assert.match(startBody.text, /GameNight Host теперь и в браузере/);
+      assert.equal(startBody.reply_markup.inline_keyboard[0][0].web_app?.url, MINI_APP);
+      assert.equal(startBody.reply_markup.inline_keyboard[1].length, 1);
+      assert.equal(startBody.reply_markup.inline_keyboard[1][0].text, SITE_BUTTON_TEXT);
+      assert.equal(startBody.reply_markup.inline_keyboard[1][0].url, SITE_URL);
     } finally {
       await server.close();
       await telegram.close();

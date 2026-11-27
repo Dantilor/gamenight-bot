@@ -1,5 +1,5 @@
 import type { Audience } from './broadcastStore.js';
-import type { ButtonMode } from './broadcastButtons.js';
+import { WEB_UPDATE_URL, type ButtonMode } from './broadcastButtons.js';
 
 export type BroadcastPreset = {
   id: string;
@@ -57,13 +57,21 @@ export const WEB_LAUNCH_PRESET: BroadcastPreset = {
 export const WEB_UPDATE_PRESET = {
   id: 'web-update-20261127',
   bodyHtml:
-    '<b>Обновление GameNight Host</b>\n\n' +
-    'У GameNight Host появилась веб-версия: play.gamenighthost.ru\n\n' +
-    'Её можно открыть в браузере с телефона или компьютера. Mini App в Telegram продолжает работать как раньше.\n\n' +
+    '🌐 <b>GameNight Host теперь на отдельном сайте!</b> 🎉\n\n' +
+    'Больше не нужно ждать загрузки Telegram или включать VPN для Mini App — игры теперь доступны прямо в браузере! 💜\n\n' +
+    '<b>Что нового?</b>\n\n' +
+    '🌐 <b>Отдельный WEB-сайт</b> — запуск игр без ожидания загрузки Telegram.\n\n' +
+    '🎡 <b>Колесо фортуны</b> — новый способ выбирать задания.\n\n' +
+    '🃏 <b>Больше вопросов</b> — обновлённые игровые подборки.\n\n' +
+    '💳 <b>Premium на сайте</b> — оформление и оплата через браузер.\n\n' +
+    '🔄 <b>Восстановление Premium</b> — перенос доступа из Telegram после привязки аккаунта.\n\n' +
+    '📱💻 <b>С телефона и компьютера!</b>\n\n' +
+    '🎮 Telegram Mini App продолжает работать.\n\n' +
+    '🌐 https://play.gamenighthost.ru/\n\n' +
     'Отключить уведомления: /unsubscribe',
   audience: 'notify' as Audience,
   buttonMode: 'both' as ButtonMode,
-  webUrl: WEB_LAUNCH_URL,
+  webUrl: WEB_UPDATE_URL,
 };
 
 export type MassSendGate = { ok: true } | { ok: false; reason: string };
@@ -93,16 +101,34 @@ export function isPromotionalWebLaunch(bodyHtml: string): boolean {
   return markers.filter((marker) => marker.test(plain)).length >= 2;
 }
 
-/** Known product claims that must not go out until claimsVerified is true. */
-export function containsUnverifiedClaims(bodyHtml: string): boolean {
-  if (WEB_LAUNCH_PRESET.claimsVerified) return false;
+/**
+ * Product claims that were checked against the product and are NOT confirmed. While
+ * claimsVerified is false, any text that states one of them cannot be mass-queued,
+ * whatever the audience. Findings (live site bundle and game source):
+ *  - wheel of fortune: not found (only DOM "wheel" events);
+ *  - 16 games / 15 000 questions: 15 games, far fewer questions;
+ *  - more questions / updated sets: no evidence;
+ *  - web Premium purchase and restore: site texts exist, end-to-end not tested on production;
+ *  - no-VPN promise: not measurable.
+ */
+const UNVERIFIED_CLAIMS: Array<{ label: string; pattern: RegExp }> = [
+  { label: 'Колесо фортуны на сайте', pattern: /колесо фортуны/i },
+  { label: '16 игр', pattern: /16\s*игр/i },
+  { label: '15 000 вопросов', pattern: /15\s*000/ },
+  { label: 'Ещё больше вопросов / обновлённые подборки', pattern: /больше вопросов|обновл[её]нные игровые подборки/i },
+  { label: 'Оформление и оплата Premium через браузер', pattern: /premium на сайте|оплата через браузер|оформление и оплата/i },
+  { label: 'Восстановление Premium из Telegram после привязки', pattern: /восстановление premium|перенос доступа/i },
+  { label: 'Работа без VPN / без Telegram', pattern: /vpn/i },
+];
+
+export function findUnverifiedClaims(bodyHtml: string): string[] {
+  if (WEB_LAUNCH_PRESET.claimsVerified) return [];
   const plain = plainText(bodyHtml);
-  return (
-    /колесо фортуны/i.test(plain) ||
-    /16\s*игр/i.test(plain) ||
-    /15\s*000/i.test(plain) ||
-    (/без vpn/i.test(plain) && /gamenight host/i.test(plain))
-  );
+  return UNVERIFIED_CLAIMS.filter((claim) => claim.pattern.test(plain)).map((claim) => claim.label);
+}
+
+export function containsUnverifiedClaims(bodyHtml: string): boolean {
+  return findUnverifiedClaims(bodyHtml).length > 0;
 }
 
 /** A word-form check for an explicit «Реклама» label; «рекламные» does not count. */
@@ -130,8 +156,9 @@ export function evaluateMassSendGate(input: { audience: Audience; bodyHtml: stri
   }
 
   // Product claims first: an unverified promo must not go out even if the owner adds «Реклама».
-  if ((promo || (input.audience === 'ads' && unverified)) && !WEB_LAUNCH_PRESET.claimsVerified) {
-    const listed = WEB_LAUNCH_PRESET.claims.map((claim) => `• ${claim}`).join('\n');
+  if (!WEB_LAUNCH_PRESET.claimsVerified && (promo || unverified)) {
+    const found = findUnverifiedClaims(body);
+    const listed = (found.length > 0 ? found : WEB_LAUNCH_PRESET.claims).map((claim) => `• ${claim}`).join('\n');
     return {
       ok: false,
       reason:

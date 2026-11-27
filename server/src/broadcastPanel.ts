@@ -6,7 +6,13 @@ import {
   httpsUrl,
   nextButtonMode,
 } from './broadcastButtons.js';
-import { evaluateMassSendGate, isPromotionalWebLaunch, WEB_LAUNCH_PRESET, WEB_UPDATE_PRESET } from './broadcastPresets.js';
+import {
+  evaluateMassSendGate,
+  findUnverifiedClaims,
+  isPromotionalWebLaunch,
+  WEB_LAUNCH_PRESET,
+  WEB_UPDATE_PRESET,
+} from './broadcastPresets.js';
 import type { BroadcastDraft, BroadcastStore } from './broadcastStore.js';
 import { redact } from './log.js';
 import { checkTelegramHtml } from './telegramHtml.js';
@@ -235,7 +241,10 @@ async function loadPreset(
     draft,
     false,
     kind === 'update'
-      ? 'Шаблон «Обновление: веб-версия» загружен: аудитория — информация, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
+      ? 'Шаблон «Обновление WEB-версии» загружен: аудитория — информация, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.' +
+        (findUnverifiedClaims(preset.bodyHtml).length > 0
+          ? `\nМассовая отправка заблокирована, пока не подтверждено: ${findUnverifiedClaims(preset.bodyHtml).join('; ')}. Тест себе доступен.`
+          : '')
       : 'Шаблон «Запуск WEB» загружен: аудитория — реклама, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
   );
 }
@@ -419,7 +428,7 @@ function menuKeyboard(): InlineMarkup {
   return {
     inline_keyboard: [
       [{ text: '📝 Создать рассылку', callback_data: 'ba:new' }],
-      [{ text: '📋 Шаблон: обновление (уведомление)', callback_data: 'ba:update' }],
+      [{ text: '📋 Шаблон: Обновление WEB-версии', callback_data: 'ba:update' }],
       [{ text: '📋 Шаблон: запуск WEB (реклама)', callback_data: 'ba:preset' }],
       [{ text: '🖼 Добавить фотографию', callback_data: 'ba:photo' }],
       [{ text: '🔘 Кнопки: сайт / Mini App / обе', callback_data: 'ba:btn' }],

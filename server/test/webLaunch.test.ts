@@ -6,6 +6,9 @@ import {
   BROADCAST_OPEN_BUTTON,
   BROADCAST_WEB_BUTTON,
   DEFAULT_WEB_URL,
+  WEB_UPDATE_BUTTON,
+  WEB_UPDATE_URL,
+  webButtonLabel,
   buildBroadcastMarkup,
   httpsUrl,
   nextButtonMode,
@@ -17,6 +20,7 @@ import {
   WEB_UPDATE_PRESET,
   containsUnverifiedClaims,
   evaluateMassSendGate,
+  findUnverifiedClaims,
   hasAdLabel,
   isPromotionalWebLaunch,
   isWebLaunchText,
@@ -678,41 +682,162 @@ test('the web launch module is not wired into the webhook process', () => {
   assert.equal(isWebLaunchText(`${WEB_LAUNCH_PRESET.bodyHtml} `), false);
 });
 
-test('neutral update text is valid HTML with no promo markers or unverified claims', () => {
-  const html = checkTelegramHtml(WEB_UPDATE_PRESET.bodyHtml);
+const NEUTRAL_NOTICE = 'Обновление: у GameNight Host появилась веб-версия. Mini App продолжает работать.\n\nОтключить уведомления: /unsubscribe';
+
+const BANNER_UPDATE = {
+  update_id: 900,
+  message: {
+    message_id: 900,
+    date: 1,
+    from: person(ADMIN),
+    chat: { id: ADMIN, type: 'private' },
+    photo: [
+      { file_id: 'AgACsmall', width: 90, height: 90 },
+      { file_id: 'AgACbanner', width: 1280, height: 720 },
+    ],
+  },
+} as never;
+
+test('update preset: HTML caption fits 1024, bold is HTML, exact wording and URL', () => {
+  const body = WEB_UPDATE_PRESET.bodyHtml;
+  const html = checkTelegramHtml(body);
   assert.equal(html.ok, true);
-  if (html.ok) assert.ok(html.visibleLength <= 1024);
-  assert.equal(isPromotionalWebLaunch(WEB_UPDATE_PRESET.bodyHtml), false);
-  assert.equal(containsUnverifiedClaims(WEB_UPDATE_PRESET.bodyHtml), false);
-  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_UPDATE_PRESET.bodyHtml }).ok, true);
-  assert.match(WEB_UPDATE_PRESET.bodyHtml, /\/unsubscribe/);
-  for (const forbidden of [/колесо/i, /\b16\b/, /15\s*000/, /без vpn/i]) {
-    assert.equal(forbidden.test(WEB_UPDATE_PRESET.bodyHtml), false, String(forbidden));
+  if (html.ok) assert.ok(html.visibleLength <= 1024, String(html.visibleLength));
+  assert.match(body, /<b>GameNight Host теперь на отдельном сайте!<\/b>/);
+  assert.match(body, /<b>Что нового\?<\/b>/);
+  assert.equal(body.includes('**'), false);
+  assert.ok(body.includes('🌐 https://play.gamenighthost.ru/'));
+  assert.ok(body.endsWith('Отключить уведомления: /unsubscribe'));
+  const plain = body.replace(/<[^>]+>/g, '');
+  for (const line of [
+    'Больше не нужно ждать загрузки Telegram или включать VPN для Mini App — игры теперь доступны прямо в браузере! 💜',
+    '🌐 Отдельный WEB-сайт — запуск игр без ожидания загрузки Telegram.',
+    '🎡 Колесо фортуны — новый способ выбирать задания.',
+    '🃏 Больше вопросов — обновлённые игровые подборки.',
+    '💳 Premium на сайте — оформление и оплата через браузер.',
+    '🔄 Восстановление Premium — перенос доступа из Telegram после привязки аккаунта.',
+    '📱💻 С телефона и компьютера!',
+    '🎮 Telegram Mini App продолжает работать.',
+  ]) {
+    assert.ok(plain.includes(line), line);
   }
-  // The advertising text still cannot be pushed to the informational audience.
-  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_LAUNCH_PRESET.bodyHtml }).ok, false);
+  assert.equal(WEB_UPDATE_PRESET.audience, 'notify');
+  assert.equal(WEB_UPDATE_PRESET.buttonMode, 'both');
+  assert.equal(WEB_UPDATE_PRESET.webUrl, WEB_UPDATE_URL);
+  const url = new URL(WEB_UPDATE_URL);
+  assert.equal(url.origin, 'https://play.gamenighthost.ru');
+  assert.equal(url.searchParams.get('utm_campaign'), 'web_update_20261127');
 });
 
-test('update notice goes to notify audience only, skips unsubscribed and blocked, never twice', async () => {
+test('update buttons: own site label, plain URL, web_app for Mini App; other campaigns keep their label', () => {
+  const markup = buildBroadcastMarkup('both', true, { miniAppUrl: MINI_APP, webUrl: WEB_UPDATE_URL });
+  assert.deepEqual(markup?.inline_keyboard, [
+    [{ text: '🌐 Открыть WEB-версию', url: WEB_UPDATE_URL }],
+    [{ text: '🎮 Играть в Mini App', web_app: { url: MINI_APP } }],
+  ]);
+  assert.equal(WEB_UPDATE_BUTTON, '🌐 Открыть WEB-версию');
+  assert.equal(webButtonLabel(WEB_LAUNCH_URL), BROADCAST_WEB_BUTTON);
+  assert.equal(webButtonLabel(null), BROADCAST_WEB_BUTTON);
+});
+
+test('unverified product claims in the update text block mass queueing for notify', async () => {
+  const found = findUnverifiedClaims(WEB_UPDATE_PRESET.bodyHtml);
+  assert.ok(found.some((label) => /Колесо/.test(label)));
+  assert.ok(found.some((label) => /Premium/.test(label)));
+  assert.equal(isPromotionalWebLaunch(WEB_UPDATE_PRESET.bodyHtml), false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_UPDATE_PRESET.bodyHtml }).ok, false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: NEUTRAL_NOTICE }).ok, true);
+  await withStore(async (store, query) => {
+    await query('INSERT INTO users (telegram_id) VALUES (2001)');
+    const loaded = await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
+    assert.match(loaded?.text ?? '', /Массовая отправка заблокирована/);
+    const ask = await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:send'), deps(store));
+    assert.equal(tokenOf(ask), '');
+    assert.match(ask?.text ?? '', /Колесо фортуны/);
+    const forged = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:go:cccccccccccc'), deps(store));
+    assert.match(forged?.text ?? '', /нельзя поставить в очередь/);
+    assert.equal(await count(query, 'bot_broadcast_campaigns'), 0);
+    assert.equal(await count(query, 'bot_broadcast_deliveries'), 0);
+  });
+});
+
+test('banner flow: preset + photo file_id gives an exact sendPhoto preview with caption and two buttons', async () => {
+  await withStore(async (store) => {
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:photo'), deps(store));
+    const saved = await handleBroadcastTurn(BANNER_UPDATE, deps(store));
+    assert.match(saved?.text ?? '', /Фотография: есть/);
+    assert.equal((await store.getDraft(ADMIN)).photoFileId, 'AgACbanner');
+    const preview = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:preview'), deps(store));
+    assert.equal(preview?.method, 'sendPhoto');
+    assert.equal(preview?.photo, 'AgACbanner');
+    assert.equal(preview?.caption, WEB_UPDATE_PRESET.bodyHtml);
+    assert.equal(preview?.parse_mode, 'HTML');
+    assert.deepEqual(preview?.reply_markup?.inline_keyboard, [
+      [{ text: '🌐 Открыть WEB-версию', url: WEB_UPDATE_URL }],
+      [{ text: '🎮 Играть в Mini App', web_app: { url: MINI_APP } }],
+    ]);
+  });
+});
+
+test('owner test sends the banner as sendPhoto with HTML caption to the admin only', async () => {
+  await withStore(async (store, query) => {
+    await query('INSERT INTO users (telegram_id) VALUES (3001), (3002)');
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:photo'), deps(store));
+    await handleBroadcastTurn(BANNER_UPDATE, deps(store));
+    await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:test'), deps(store));
+    assert.equal(await count(query, 'bot_broadcast_deliveries'), 1);
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fakeFetch = (async (url: string, init?: { body?: string }) => {
+      calls.push({ url, body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 555 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const { createTelegramSender } = await import('../src/broadcastWorker.js');
+    const sender = createTelegramSender('123456789:AAFakeTokenForTestsOnly000', fakeFetch);
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, kind: 'test', maxSends: 1, minIntervalMs: 0, sleep: async () => undefined });
+    assert.equal(report.sent, 1);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/sendPhoto$/);
+    assert.equal(calls[0].body.chat_id, ADMIN);
+    assert.equal(calls[0].body.photo, 'AgACbanner');
+    assert.equal(calls[0].body.caption, WEB_UPDATE_PRESET.bodyHtml);
+    assert.equal(calls[0].body.parse_mode, 'HTML');
+    assert.deepEqual((calls[0].body.reply_markup as { inline_keyboard: unknown }).inline_keyboard, [
+      [{ text: '🌐 Открыть WEB-версию', url: WEB_UPDATE_URL }],
+      [{ text: '🎮 Играть в Mini App', web_app: { url: MINI_APP } }],
+    ]);
+    const row = await query<{ telegram_id: string | number; telegram_message_id: string | number; status: string }>(
+      'SELECT telegram_id, telegram_message_id, status FROM bot_broadcast_deliveries'
+    );
+    assert.equal(row.rows.length, 1);
+    assert.equal(Number(row.rows[0]?.telegram_id), ADMIN);
+    assert.equal(Number(row.rows[0]?.telegram_message_id), 555);
+    assert.equal(row.rows[0]?.status, 'sent');
+  });
+});
+
+test('notify audience: skips unsubscribed and blocked, re-checks before send, never twice', async () => {
   await withStore(async (store, query) => {
     for (const id of [1001, 1002, 1003, 1004]) await query('INSERT INTO users (telegram_id) VALUES ($1::bigint)', [id]);
     await handleBroadcastTurn(textUpdate(10, 1002, '/unsubscribe'), deps(store));
     await store.markContactBlocked(1003);
 
-    const loaded = await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
-    assert.match(loaded?.text ?? '', /аудитория — информация/);
-    const preview = await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:preview'), deps(store));
-    assert.equal(preview?.text, WEB_UPDATE_PRESET.bodyHtml);
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(2, ADMIN, NEUTRAL_NOTICE), deps(store));
+    await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:btn'), deps(store));
+    const preview = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:preview'), deps(store));
+    assert.equal(preview?.text, NEUTRAL_NOTICE);
     assert.equal(buttons(preview).length, 2);
 
-    const ask = await handleBroadcastTurn(callbackUpdate(3, ADMIN, 'ba:send'), deps(store));
+    const ask = await handleBroadcastTurn(callbackUpdate(5, ADMIN, 'ba:send'), deps(store));
     assert.match(ask?.text ?? '', /Получателей: 2\./);
-    const confirmed = await handleBroadcastTurn(callbackUpdate(4, ADMIN, tokenOf(ask)), deps(store));
+    const confirmed = await handleBroadcastTurn(callbackUpdate(6, ADMIN, tokenOf(ask)), deps(store));
     assert.match(confirmed?.text ?? '', /2 сообщений/);
     const campaign = await query<{ audience: string; kind: string }>('SELECT audience, kind FROM bot_broadcast_campaigns');
     assert.deepEqual(campaign.rows[0], { audience: 'notify', kind: 'mass' });
 
-    // One of the two unsubscribes after queueing: the worker re-checks right before the send.
     await handleBroadcastTurn(textUpdate(11, 1004, '/unsubscribe'), deps(store));
     const sent: number[] = [];
     const sender: OutboundSender = {
@@ -726,9 +851,9 @@ test('update notice goes to notify audience only, skips unsubscribed and blocked
     assert.equal(report.sent, 1);
     assert.equal(report.skipped, 1);
 
-    // Same text again: the person who already got it is not queued, nothing else is left.
-    await handleBroadcastTurn(callbackUpdate(20, ADMIN, 'ba:update'), deps(store));
-    const again = await handleBroadcastTurn(callbackUpdate(21, ADMIN, 'ba:send'), deps(store));
+    await handleBroadcastTurn(callbackUpdate(20, ADMIN, 'ba:new'), deps(store));
+    await handleBroadcastTurn(textUpdate(21, ADMIN, NEUTRAL_NOTICE), deps(store));
+    const again = await handleBroadcastTurn(callbackUpdate(22, ADMIN, 'ba:send'), deps(store));
     assert.equal(tokenOf(again), '');
     assert.match(again?.text ?? '', /Получателей: 0/);
     assert.equal(await count(query, 'bot_broadcast_campaigns'), 1);

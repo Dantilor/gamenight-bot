@@ -5,6 +5,14 @@ export const BUTTON_MODES: readonly ButtonMode[] = ['web', 'miniapp', 'both'];
 export const BROADCAST_WEB_BUTTON = '🌐 Открыть новый сайт';
 export const BROADCAST_OPEN_BUTTON = '🎮 Играть в Mini App';
 export const DEFAULT_WEB_URL = 'https://play.gamenighthost.ru/';
+export const WEB_UPDATE_BUTTON = '🌐 Открыть WEB-версию';
+export const WEB_UPDATE_URL =
+  'https://play.gamenighthost.ru/?utm_source=telegram&utm_medium=bot&utm_campaign=web_update_20261127';
+
+/** The «обновление» campaign has its own site-button label; every other URL keeps the default label. */
+export function webButtonLabel(webUrl: string | null | undefined): string {
+  return httpsUrl(webUrl) === WEB_UPDATE_URL ? WEB_UPDATE_BUTTON : BROADCAST_WEB_BUTTON;
+}
 
 type WebAppButton = { text: string; web_app: { url: string } };
 type UrlButton = { text: string; url: string };
@@ -52,7 +60,7 @@ export function buildBroadcastMarkup(
   if (!includeButton) return null;
   const rows: BroadcastMarkup['inline_keyboard'] = [];
   const web = httpsUrl(urls.webUrl) ?? DEFAULT_WEB_URL;
-  if (mode === 'web' || mode === 'both') rows.push([{ text: BROADCAST_WEB_BUTTON, url: web }]);
+  if (mode === 'web' || mode === 'both') rows.push([{ text: webButtonLabel(web), url: web }]);
   const miniApp = httpsUrl(urls.miniAppUrl);
   if ((mode === 'miniapp' || mode === 'both') && miniApp) {
     rows.push([{ text: BROADCAST_OPEN_BUTTON, web_app: { url: miniApp } }]);

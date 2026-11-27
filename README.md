@@ -123,7 +123,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f server/db/migrations/001_bot_subscrip
 
 Темп по умолчанию — одно сообщение каждые 60 мс (около 16 в секунду). Ответ 429 worker переживает: ждёт `retry_after`, возвращает попытку получателю и после 25 подряд ответов 429 останавливает запуск, сохраняя очередь. Ошибка 400, не связанная с блокировкой, помечает получателя как `failed` без повторов. `message_id` сохраняется, статус `sent` ставится только после него.
 
-Доступ к Telegram без отправки проверяется командой `npm run broadcast-worker -- --check`. Доставка выполняется там, где открывается `https://api.telegram.org` и есть доступ к базе (например, на компьютере владельца). На Timeweb в режиме `webhook` этот процесс запускать не нужно: исходящее соединение с Telegram там не подтверждено, и worker не должен помечать сообщения отправленными без `message_id`. Остановка через «🛑 Остановить рассылку» не даёт worker взять оставшиеся сообщения.
+Доступ к Telegram без отправки проверяется командой `npm run broadcast-worker -- --check`. Доставка выполняется там, где открывается `https://api.telegram.org` и есть доступ к базе: на постоянном сервере worker (см. ниже `--daemon`). На Timeweb App Platform бота worker не запускается: исходящее соединение с Telegram оттуда заканчивалось `ETIMEDOUT`, а worker не должен помечать сообщения отправленными без `message_id`. Остановка через «🛑 Остановить рассылку» не даёт worker взять оставшиеся сообщения.
 
 Перед включением владелец базы делает резервную копию и применяет миграции по порядку. Пример для PostgreSQL:
 
@@ -149,6 +149,44 @@ npm run broadcast-worker -- --status
 В ответе поле `eligibleAdsRecipients`. Telegram ID не печатаются.
 
 Роли бота нужны чтение и запись только в новые таблицы `bot_broadcast_*` и `SELECT (telegram_id)` на `users`. Права на изменение `users`, `subscriptions`, `payments` и `plans` ей не выдавайте.
+
+### Постоянный worker (`--daemon`)
+
+`npm run broadcast-worker -- --daemon` (в контейнере `node dist/broadcastWorkerMain.js --daemon`) работает постоянно. Он опрашивает очередь PostgreSQL раз в `BROADCAST_POLL_SECONDS`, сам отправляет то, что поставлено из `/admin`, и после перезапуска продолжает с того же места: всё состояние хранится в базе. Бот, webhook и `/admin` остаются на Timeweb без изменений, worker — отдельный процесс на сервере, откуда открывается `api.telegram.org`.
+
+Защиты:
+
+- `BROADCAST_MASS_ENABLED=false` (по умолчанию) — отправляются только «🧪 Тест себе». Подтверждённые массовые кампании ждут в очереди.
+- С `BROADCAST_MASS_ENABLED=true` массовая кампания начинается, только если владельцу уже доставлен тест с тем же текстом, фото и кнопками. Экран подтверждения в `/admin` показывает, есть ли такой тест.
+- Кампании в статусе `queued` старше `BROADCAST_MAX_QUEUED_AGE_HOURS` (24 ч) при старте не запускаются. Начатые (`running`) продолжаются.
+- «🛑 Остановить рассылку» действует до следующего получателя; паузы ожидания при остановке прерываются.
+- Повторной отправки нет. Если запрос ушёл, а ответ Telegram потерян (таймаут, обрыв, 5xx, нечитаемый ответ), доставка помечается `failed` с `outcome unknown, not resent`. Строки, оставшиеся в `sending` после падения процесса, через 2 минуты получают тот же статус. Лучше одно недоставленное, чем дубль.
+- Сеть до Telegram недоступна (DNS, отказ, таймаут соединения) или Telegram отклонил `BOT_TOKEN` (401) — попытка не тратится, очередь ставится на паузу с нарастающей задержкой до 60 с.
+- 403 «bot was blocked» → `blocked` и `blocked_at`; 429 → ожидание `retry_after`; постоянная 400 → `failed` без повторов.
+- Каждый цикл проверяет схему и права (`--schema`). Если миграции 002/003 не применены или роли не хватает прав, worker пишет понятную причину в лог и ничего не отправляет.
+
+Файлы деплоя — в `deploy/broadcast-worker/` (корневого Dockerfile нет, сборка бота на Timeweb не меняется):
+
+- `Dockerfile` — node:22-alpine, непривилегированный пользователь, `HEALTHCHECK` через `--healthcheck` (heartbeat не старше 3 минут);
+- `docker-compose.yml` — `restart: unless-stopped`, без открытых портов, read-only файловая система, ротация логов;
+- `worker.env.example` — образец `worker.env` (сам `worker.env` и `certs/` в `.gitignore`);
+- `grants.sql` — отдельная роль `gamenight_broadcast_worker` с минимальными правами. Это не миграция: запускается владельцем базы один раз, после резервной копии и миграций 002/003.
+
+Разовая настройка на сервере worker:
+
+```bash
+git clone --branch feature/bot-auto-broadcast-worker-20261127 https://github.com/Dantilor/gamenight-bot.git
+cd gamenight-bot/deploy/broadcast-worker
+cp worker.env.example worker.env && chmod 600 worker.env   # вписать BOT_TOKEN, DATABASE_URL роли worker
+mkdir -p certs && cp /path/to/db-ca.pem certs/db-ca.pem
+cd ../.. && docker compose -f deploy/broadcast-worker/docker-compose.yml run --rm broadcast-worker node dist/broadcastWorkerMain.js --schema
+docker compose -f deploy/broadcast-worker/docker-compose.yml run --rm broadcast-worker node dist/broadcastWorkerMain.js --check
+docker compose -f deploy/broadcast-worker/docker-compose.yml up -d --build
+docker compose -f deploy/broadcast-worker/docker-compose.yml ps     # STATUS: healthy
+docker compose -f deploy/broadcast-worker/docker-compose.yml logs -f
+```
+
+Массовый режим включается после успешного теста: `BROADCAST_MASS_ENABLED=true` в `worker.env`, затем `docker compose ... up -d`.
 
 ## Команды и меню BotFather
 

@@ -9,7 +9,7 @@
     "start": "node dist/main.js",
     "migrate": "tsx server/src/migrate.ts",
     "broadcast-worker": "tsx server/src/broadcastWorkerMain.ts",
-    "test": "npm run build && tsx --test server/test/config.test.ts server/test/dbTls.test.ts server/test/webhook.test.ts server/test/webhookReply.test.ts server/test/commands.test.ts server/test/subscription.test.ts server/test/productionStart.test.ts server/test/broadcast.test.ts server/test/webLaunch.test.ts"
+    "test": "npm run build && tsx --test server/test/config.test.ts server/test/dbTls.test.ts server/test/webhook.test.ts server/test/webhookReply.test.ts server/test/commands.test.ts server/test/subscription.test.ts server/test/productionStart.test.ts server/test/broadcast.test.ts server/test/webLaunch.test.ts server/test/autoWorker.test.ts"
   },
   "keywords": [
     "telegram",

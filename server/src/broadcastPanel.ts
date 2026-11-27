@@ -253,12 +253,13 @@ async function queueTest(actor: Actor, draft: BroadcastDraft, store: BroadcastSt
   const result = await store.queueTest(actor.userId, draft);
   if (!result.ok) return textReply(actor.chatId, 'Сначала создайте текст. Тест никому не поставлен.');
   if (result.duplicate) {
-    return textReply(actor.chatId, 'Тест для вас уже стоит в очереди и повторно не создан. Его отправит broadcast-worker, когда появится доступ к Telegram.');
+    return textReply(actor.chatId, 'Тест для вас уже стоит в очереди и повторно не создан. Worker отправит его автоматически.');
   }
   return textReply(
     actor.chatId,
     `Тест поставлен в очередь только для Telegram ID ${actor.userId}. Другие получатели не добавлены.\n` +
-      'Этот процесс сообщение не отправляет. Пока Telegram не вернёт message_id, доставка не считается успешной.'
+      'Worker отправит его автоматически в течение нескольких секунд. Результат — в «📊 Статистика».\n' +
+      'Пока Telegram не вернёт message_id, доставка не считается успешной.'
   );
 }
 
@@ -286,6 +287,12 @@ async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastS
       'Получателей: 0. Все доступные пользователи уже получили этот текст или недоступны (отписка, блокировка). Рассылка не создана.'
     );
   }
+  let tested = false;
+  try {
+    tested = await store.hasDeliveredTest(actor.userId, draft);
+  } catch (error) {
+    console.error('[broadcast] test delivery was not checked', redact(error));
+  }
   const token = crypto.randomBytes(6).toString('hex');
   draft.step = 'confirm';
   draft.confirmToken = token;
@@ -303,6 +310,9 @@ async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastS
   return textReply(
     actor.chatId,
     `Получателей: ${recipients}.\nАудитория: ${audience}\nКнопки: ${describeButtonMode(draft.buttonMode)}.\n` +
+      (tested
+        ? '✅ Тест этого варианта (текст, фото, кнопки) доставлен вам.\n'
+        : '⚠️ Тест именно этого варианта ещё не доставлен. Worker не начнёт массовую отправку, пока «🧪 Тест себе» с тем же текстом, фото и кнопками не дойдёт до вас.\n') +
       'Это ещё не отправка. Подтверждение только ставит сообщения в очередь.\n' +
       'Перед каждой фактической отправкой worker ещё раз проверит согласие и блокировку.\n' +
       'Доставка будет засчитана после message_id от Telegram.',
@@ -339,7 +349,8 @@ async function confirm(actor: Actor, draft: BroadcastDraft, token: string, store
   return textReply(
     actor.chatId,
     `В очередь поставлено ${result.recipients} сообщений. Ни одно ещё не отправлено.\n` +
-      'Отправку выполняет только отдельно запущенный broadcast-worker на сети, где открывается api.telegram.org.'
+      'Worker начнёт отправку автоматически, если в нём включён массовый режим и тест этого варианта уже доставлен. ' +
+      'Ход — в «📊 Статистика», остановка — «🛑 Остановить рассылку».'
   );
 }
 

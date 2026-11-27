@@ -1,0 +1,26 @@
+# Run on the worker VPS from the repository root:
+#   docker compose -f deploy/broadcast-worker/docker-compose.yml up -d --build
+services:
+  broadcast-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/broadcast-worker/Dockerfile
+    image: gamenight-broadcast-worker
+    restart: unless-stopped
+    env_file:
+      - worker.env
+    volumes:
+      - ./certs:/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

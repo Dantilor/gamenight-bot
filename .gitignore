@@ -3,6 +3,8 @@ dist
 .env
 .env.*
 !.env.example
+deploy/broadcast-worker/worker.env
+deploy/broadcast-worker/certs/
 .DS_Store
 server/data
 *.sqlite

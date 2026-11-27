@@ -17,6 +17,8 @@ import type { SqlConnection, SqlQuery } from '../src/premiumReader.js';
 const ADMIN = 434230321;
 const OTHER = 77;
 const MINI_APP = 'https://mini.example/app';
+// Most worker tests are about other rules; the delivered-test gate has its own tests.
+const NO_TEST_GATE = { requireDeliveredTest: false };
 
 function person(id: number) {
   return { id, is_bot: false, first_name: 'Test' };
@@ -220,7 +222,7 @@ test('stopping a campaign prevents delivery and a timeout is not success', async
     const stopped = await handleBroadcastTurn(callbackUpdate(5, ADMIN, 'ba:stop'), deps(store));
     assert.match(stopped?.text ?? '', /остановлена/);
     const sender: OutboundSender = { async send() { throw new Error('sender must not be called'); } };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 0);
     const rows = await query<{ status: string; telegram_message_id: number | null }>(
       'SELECT status, telegram_message_id FROM bot_broadcast_deliveries'
@@ -236,7 +238,7 @@ test('stopping a campaign prevents delivery and a timeout is not success', async
         throw new Error('connect ETIMEDOUT');
       },
     };
-    const failed = await runBroadcastWorker(store, failing, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 1, sleep: async () => undefined });
+    const failed = await runBroadcastWorker(store, failing, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, maxAttempts: 1, sleep: async () => undefined });
     assert.equal(failed.sent, 0);
     assert.equal(calls, 1);
     const after = await query<{ status: string; telegram_message_id: number | null }>(
@@ -264,7 +266,7 @@ test('worker records a blocked user without a message id', async () => {
         throw error;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 0);
     assert.equal(report.blocked, 1);
     const delivery = await query<{ status: string; telegram_message_id: number | null }>('SELECT status, telegram_message_id FROM bot_broadcast_deliveries');
@@ -311,13 +313,13 @@ test('worker records a message only after Telegram confirms it once', async () =
         return 501;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
     assert.equal(report.sent, 1);
     assert.deepEqual(seen, [OTHER, OTHER]);
     const row = await query<{ status: string; telegram_message_id: string | number }>('SELECT status, telegram_message_id FROM bot_broadcast_deliveries');
     assert.equal(row.rows[0]?.status, 'sent');
     assert.equal(Number(row.rows[0]?.telegram_message_id), 501);
-    const second = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const second = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(second.sent, 0);
     assert.equal(seen.length, 2);
   });

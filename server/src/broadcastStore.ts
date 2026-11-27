@@ -38,6 +38,13 @@ export type ClaimedDelivery = {
   webUrl: string | null;
 };
 
+export type ClaimPolicy = {
+  /** Queued campaigns older than this are left alone (running ones always resume). Null disables the limit. */
+  maxQueuedAgeHours?: number | null;
+  /** Mass deliveries are claimed only after a test of identical content reached the admin. */
+  requireDeliveredTest?: boolean;
+};
+
 export type BroadcastStats = {
   pending: number;
   sent: number;
@@ -61,8 +68,16 @@ export type BroadcastStore = {
   queueMass(adminId: number, token: string): Promise<QueueResult>;
   stopActive(adminId: number): Promise<number>;
   stats(adminId: number): Promise<BroadcastStats>;
-  releaseStaleSending(): Promise<number>;
-  claimNext(maxAttempts: number, kind?: CampaignKind): Promise<ClaimedDelivery | null>;
+  /**
+   * A row left in 'sending' by a crash may already be in the recipient's chat. It is marked
+   * failed (outcome unknown) instead of being sent again, so a restart never duplicates.
+   */
+  failStaleSending(): Promise<number>;
+  claimNext(maxAttempts: number, kind?: CampaignKind, policy?: ClaimPolicy): Promise<ClaimedDelivery | null>;
+  /** True when a test copy of exactly this content has reached the admin (status sent). */
+  hasDeliveredTest(adminId: number, draft: BroadcastDraft): Promise<boolean>;
+  /** Missing migrations and privileges, in plain words. Empty means the worker can run. */
+  schemaProblems(): Promise<string[]>;
   queueDepth(kind?: CampaignKind): Promise<number>;
   /** Re-check consent / opt-out / block right before a real send. */
   isStillEligible(telegramId: number, audience: Audience): Promise<boolean>;
@@ -147,12 +162,13 @@ export function createBroadcastStore(connection: SqlConnection): BroadcastStore 
   return {
     async tablesReady() {
       // Migration 002 creates the tables, migration 003 adds the per-campaign button columns.
+      // pg_attribute, unlike information_schema, also shows columns of tables this role cannot read
+      // (the worker role has no access to drafts).
       const result = await query<{ name: string | null; columns: string | number }>(
         `SELECT to_regclass('public.bot_broadcast_contacts') AS name,
-                (SELECT count(*) FROM information_schema.columns
-                 WHERE table_schema = 'public'
-                   AND column_name IN ('button_mode', 'web_url')
-                   AND table_name IN ('bot_broadcast_drafts', 'bot_broadcast_campaigns'))::int AS columns`
+                (SELECT count(*) FROM pg_attribute
+                 WHERE attrelid IN (to_regclass('public.bot_broadcast_drafts'), to_regclass('public.bot_broadcast_campaigns'))
+                   AND attname IN ('button_mode', 'web_url') AND NOT attisdropped)::int AS columns`
       );
       return Boolean(result.rows[0]?.name) && asCount(result.rows[0]?.columns) === 4;
     },
@@ -274,18 +290,81 @@ export function createBroadcastStore(connection: SqlConnection): BroadcastStore 
         runningCampaigns: asCount(campaigns.rows[0]?.running),
       };
     },
-    async releaseStaleSending() {
+    async failStaleSending() {
       const result = await query(
         `UPDATE bot_broadcast_deliveries
-         SET status = 'pending', updated_at = now()
+         SET status = 'failed',
+             last_error = 'outcome unknown: worker stopped during the send; not resent to avoid a duplicate',
+             updated_at = now()
          WHERE status = 'sending'
            AND telegram_message_id IS NULL
            AND updated_at < now() - interval '2 minutes'`
       );
       return result.rowCount;
     },
-    async claimNext(maxAttempts, kind) {
-      return connection.withTransaction((tx) => claimOne(tx, maxAttempts, kind ?? null));
+    async claimNext(maxAttempts, kind, policy) {
+      return connection.withTransaction((tx) => claimOne(tx, maxAttempts, kind ?? null, policy ?? {}));
+    },
+    async hasDeliveredTest(adminId, draft) {
+      const result = await query<{ ok: number }>(
+        `SELECT 1 AS ok
+         FROM bot_broadcast_campaigns t
+         JOIN bot_broadcast_deliveries td ON td.campaign_id = t.id
+         WHERE t.kind = 'test'
+           AND t.admin_id = $1::bigint
+           AND td.status = 'sent'
+           AND t.body_html = $2::text
+           AND t.photo_file_id IS NOT DISTINCT FROM $3::text
+           AND t.include_button = $4::boolean
+           AND t.button_mode = $5::text
+           AND t.web_url IS NOT DISTINCT FROM $6::text
+         LIMIT 1`,
+        [adminId, draft.bodyHtml, draft.photoFileId, draft.includeButton, draft.buttonMode, draft.webUrl]
+      );
+      return result.rows.length > 0;
+    },
+    async schemaProblems() {
+      const tables = await query<Record<string, boolean | number>>(
+        `SELECT
+           to_regclass('public.bot_broadcast_contacts') IS NOT NULL AS contacts,
+           to_regclass('public.bot_broadcast_drafts') IS NOT NULL AS drafts,
+           to_regclass('public.bot_broadcast_campaigns') IS NOT NULL AS campaigns,
+           to_regclass('public.bot_broadcast_deliveries') IS NOT NULL AS deliveries,
+           to_regclass('public.users') IS NOT NULL AS users,
+           (SELECT count(*) FROM pg_attribute
+            WHERE attrelid = to_regclass('public.bot_broadcast_campaigns')
+              AND attname IN ('button_mode', 'web_url') AND NOT attisdropped)::int AS campaign_columns,
+           (SELECT count(*) FROM pg_attribute
+            WHERE attrelid = to_regclass('public.bot_broadcast_drafts')
+              AND attname IN ('button_mode', 'web_url') AND NOT attisdropped)::int AS draft_columns`
+      );
+      const row = tables.rows[0] ?? {};
+      const problems: string[] = [];
+      for (const name of ['contacts', 'drafts', 'campaigns', 'deliveries']) {
+        if (!row[name]) problems.push(`migration 002 missing: table bot_broadcast_${name}`);
+      }
+      if (!row.users) problems.push('table users is missing or not visible to this role');
+      if (problems.length > 0) return problems;
+      if (asCount(row.campaign_columns) !== 2 || asCount(row.draft_columns) !== 2) {
+        problems.push('migration 003 missing: button_mode / web_url columns');
+        return problems;
+      }
+      const needed: Array<[string, string]> = [
+        ['bot_broadcast_deliveries', 'SELECT'],
+        ['bot_broadcast_deliveries', 'UPDATE'],
+        ['bot_broadcast_campaigns', 'SELECT'],
+        ['bot_broadcast_campaigns', 'UPDATE'],
+        ['bot_broadcast_contacts', 'SELECT'],
+        ['bot_broadcast_contacts', 'INSERT'],
+        ['bot_broadcast_contacts', 'UPDATE'],
+      ];
+      for (const [table, privilege] of needed) {
+        const granted = await query<{ ok: boolean }>(`SELECT has_table_privilege($1::text, $2::text) AS ok`, [`public.${table}`, privilege]);
+        if (!granted.rows[0]?.ok) problems.push(`privilege missing: ${privilege} on ${table}`);
+      }
+      const users = await query<{ ok: boolean }>(`SELECT has_column_privilege('public.users', 'telegram_id', 'SELECT') AS ok`);
+      if (!users.rows[0]?.ok) problems.push('privilege missing: SELECT (telegram_id) on users');
+      return problems;
     },
     async isStillEligible(telegramId, audience) {
       if (audience === 'ads') {
@@ -524,7 +603,13 @@ async function insertMass(query: SqlQuery, adminId: number, token: string): Prom
   return { ok: true, id, recipients: count, duplicate: false };
 }
 
-async function claimOne(query: SqlQuery, maxAttempts: number, kindFilter: CampaignKind | null): Promise<ClaimedDelivery | null> {
+async function claimOne(
+  query: SqlQuery,
+  maxAttempts: number,
+  kindFilter: CampaignKind | null,
+  policy: ClaimPolicy
+): Promise<ClaimedDelivery | null> {
+  const maxAge = policy.maxQueuedAgeHours ?? null;
   const result = await query<ClaimRow>(
     `UPDATE bot_broadcast_deliveries d
      SET status = 'sending', attempt_count = d.attempt_count + 1, updated_at = now()
@@ -536,6 +621,20 @@ async function claimOne(query: SqlQuery, maxAttempts: number, kindFilter: Campai
          AND d2.attempt_count < $1::int
          AND c.status IN ('queued', 'running')
          AND ($2::text IS NULL OR c.kind = $2::text)
+         AND ($3::int IS NULL OR c.status = 'running' OR c.created_at >= now() - make_interval(hours => $3::int))
+         AND (c.kind = 'test' OR NOT $4::boolean OR EXISTS (
+           SELECT 1
+           FROM bot_broadcast_campaigns t
+           JOIN bot_broadcast_deliveries td ON td.campaign_id = t.id
+           WHERE t.kind = 'test'
+             AND t.admin_id = c.admin_id
+             AND td.status = 'sent'
+             AND t.body_html = c.body_html
+             AND t.photo_file_id IS NOT DISTINCT FROM c.photo_file_id
+             AND t.include_button = c.include_button
+             AND t.button_mode = c.button_mode
+             AND t.web_url IS NOT DISTINCT FROM c.web_url
+         ))
        ORDER BY d2.id
        FOR UPDATE SKIP LOCKED
        LIMIT 1
@@ -548,7 +647,7 @@ async function claimOne(query: SqlQuery, maxAttempts: number, kindFilter: Campai
        (SELECT include_button FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS include_button,
        (SELECT button_mode FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS button_mode,
        (SELECT web_url FROM bot_broadcast_campaigns WHERE id = d.campaign_id) AS web_url`,
-    [maxAttempts, kindFilter]
+    [maxAttempts, kindFilter, maxAge, policy.requireDeliveredTest ?? false]
   );
   const row = result.rows[0];
   if (!row) return null;

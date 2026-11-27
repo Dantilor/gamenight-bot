@@ -34,6 +34,8 @@ import { checkTelegramHtml } from '../src/telegramHtml.js';
 
 const ADMIN = 434230321;
 const MINI_APP = 'https://mini.example/app';
+// Most worker tests are about other rules; the delivered-test gate has its own tests.
+const NO_TEST_GATE = { requireDeliveredTest: false };
 
 function person(id: number) {
   return { id, is_bot: false, first_name: 'Test' };
@@ -433,7 +435,7 @@ test('the test copy keeps the draft buttons and the worker sends them to the own
         return 4242;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 1);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].chatId, ADMIN);
@@ -469,7 +471,7 @@ test('--only-test style runs never touch a mass queue', async () => {
     assert.equal(onlyTest.sent, 0);
     assert.deepEqual(sent, []);
     assert.equal(await store.queueDepth('mass'), 1);
-    const all = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const all = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(all.sent, 1);
     assert.deepEqual(sent, [801]);
   });
@@ -497,7 +499,7 @@ test('mass send re-checks consent before Telegram and skips revoked recipients',
         return 33;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 1);
     assert.equal(report.skipped, 1);
     assert.deepEqual(sent, [901]);
@@ -525,7 +527,7 @@ test('stopping a mass campaign still prevents delivery after the eligibility che
         throw new Error('must not send');
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     // A stopped campaign is no longer claimable (status not queued/running), so nothing is sent
     // and pending rows stay pending. Duplicate confirm tokens still cannot create a second campaign.
     assert.equal(report.sent, 0);
@@ -592,7 +594,7 @@ test('a long retry_after is honoured instead of being cut to 30 seconds', async 
         return 12;
       },
     };
-    await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async (ms) => void sleeps.push(ms) });
+    await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async (ms) => void sleeps.push(ms) });
     assert.ok(sleeps.includes(120_000));
   });
 });
@@ -605,7 +607,7 @@ test('endless 429 stops the run and keeps the queue', async () => {
         throw telegramFailure(429, 'Too Many Requests', 1);
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.aborted, true);
     const row = await query<{ status: string }>('SELECT status FROM bot_broadcast_deliveries');
     assert.equal(row.rows[0]?.status, 'pending');
@@ -622,7 +624,7 @@ test('a bad request that is not a block fails at once without retries', async ()
         throw telegramFailure(400, "Bad Request: can't parse entities");
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
     assert.equal(calls, 1);
     assert.equal(report.failed, 1);
     assert.equal(report.retried, 0);
@@ -639,7 +641,7 @@ test('a blocked bot is recorded as blocked and a network error is retried', asyn
         throw telegramFailure(403, 'Forbidden: bot was blocked by the user');
       },
     };
-    const first = await runBroadcastWorker(store, blocked, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const first = await runBroadcastWorker(store, blocked, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(first.blocked, 1);
     const row = await query<{ status: string }>('SELECT status FROM bot_broadcast_deliveries');
     assert.equal(row.rows[0]?.status, 'blocked');
@@ -651,10 +653,12 @@ test('a blocked bot is recorded as blocked and a network error is retried', asyn
         throw new Error('Telegram connection failed');
       },
     };
-    const report = await runBroadcastWorker(store, offline, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxSends: 1, sleep: async () => undefined });
-    assert.equal(report.retried, 1);
-    const row = await query<{ status: string }>('SELECT status FROM bot_broadcast_deliveries');
+    const report = await runBroadcastWorker(store, offline, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, maxSends: 1, sleep: async () => undefined });
+    // Telegram unreachable: the run pauses and the attempt is given back, nothing is lost.
+    assert.equal(report.networkDown, true);
+    const row = await query<{ status: string; attempt_count: number }>('SELECT status, attempt_count FROM bot_broadcast_deliveries');
     assert.equal(row.rows[0]?.status, 'pending');
+    assert.equal(Number(row.rows[0]?.attempt_count), 0);
   });
 });
 
@@ -846,7 +850,7 @@ test('notify audience: skips unsubscribed and blocked, re-checks before send, ne
         return 70 + sent.length;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, policy: NO_TEST_GATE, minIntervalMs: 0, sleep: async () => undefined });
     assert.deepEqual(sent, [1001]);
     assert.equal(report.sent, 1);
     assert.equal(report.skipped, 1);

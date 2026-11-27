@@ -339,6 +339,31 @@ test('a small text edit or notify switch cannot bypass the ads gate', async () =
   });
 });
 
+test('the exact owner-approved WEB update queues for notify without weakening other gates', async () => {
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_UPDATE_PRESET.bodyHtml }).ok, true);
+  assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: WEB_UPDATE_PRESET.bodyHtml }).ok, false);
+  assert.equal(evaluateMassSendGate({ audience: 'notify', bodyHtml: WEB_UPDATE_PRESET.bodyHtml + ' ' }).ok, false);
+  await withStore(async (store, query) => {
+    await query('INSERT INTO users (telegram_id) VALUES (60101)');
+    await handleBroadcastTurn(callbackUpdate(1, ADMIN, 'ba:update'), deps(store));
+    const draft = await store.getDraft(ADMIN);
+    assert.equal(draft.bodyHtml, WEB_UPDATE_PRESET.bodyHtml);
+    assert.equal(draft.audience, 'notify');
+    assert.equal(draft.buttonMode, 'both');
+    const ask = await handleBroadcastTurn(callbackUpdate(2, ADMIN, 'ba:send'), deps(store));
+    const token = tokenOf(ask);
+    assert.match(token, /^ba:go:/);
+    await handleBroadcastTurn(callbackUpdate(3, ADMIN, token), deps(store));
+    assert.equal(await count(query, 'bot_broadcast_deliveries'), 1);
+    const campaigns = await query<{ audience: string; kind: string; button_mode: string }>(
+      'SELECT audience, kind, button_mode FROM bot_broadcast_campaigns'
+    );
+    assert.equal(campaigns.rows[0]?.audience, 'notify');
+    assert.equal(campaigns.rows[0]?.kind, 'mass');
+    assert.equal(campaigns.rows[0]?.button_mode, 'both');
+  });
+});
+
 test('missing ad label hard-blocks any ads mass campaign', async () => {
   assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: 'Просто текст без маркировки' }).ok, false);
   assert.equal(evaluateMassSendGate({ audience: 'ads', bodyHtml: 'Реклама. Короткий безопасный текст' }).ok, true);

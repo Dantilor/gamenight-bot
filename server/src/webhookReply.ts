@@ -1,13 +1,25 @@
 import fs from 'node:fs';
 import type { AppConfig } from './config.js';
-import { HERO_CAPTION, OPEN_PREMIUM_BUTTON_TEXT, PLAY_BUTTON_TEXT, START_BUTTON_TEXT } from './bot.js';
+import {
+  HERO_CAPTION,
+  OPEN_PREMIUM_BUTTON_TEXT,
+  PLAY_BUTTON_TEXT,
+  SITE_BUTTON_TEXT,
+  SITE_URL,
+  START_BUTTON_TEXT,
+  START_CAPTION,
+} from './bot.js';
 import { fetchPlans, formatTariffs, premiumPageUrl } from './plans.js';
 import type { TelegramUpdate } from './webhook.js';
 
 const MISSING_MINI_APP = 'MINI_APP_URL не задан';
 
-type WebAppMarkup = {
-  inline_keyboard: Array<Array<{ text: string; web_app: { url: string } }>>;
+type InlineButton =
+  | { text: string; web_app: { url: string } }
+  | { text: string; url: string };
+
+type InlineMarkup = {
+  inline_keyboard: Array<Array<InlineButton>>;
 };
 
 type RemoveKeyboardMarkup = { remove_keyboard: true };
@@ -18,7 +30,7 @@ export type WebhookMethodReply =
       chat_id: number;
       text: string;
       parse_mode?: 'HTML';
-      reply_markup?: WebAppMarkup | RemoveKeyboardMarkup;
+      reply_markup?: InlineMarkup | RemoveKeyboardMarkup;
     }
   | {
       method: 'sendPhoto';
@@ -26,7 +38,7 @@ export type WebhookMethodReply =
       photo: string;
       caption: string;
       parse_mode: 'HTML';
-      reply_markup?: WebAppMarkup;
+      reply_markup?: InlineMarkup;
     };
 
 export type WebhookReplyDeps = {
@@ -94,14 +106,20 @@ function startReply(
   config: Pick<AppConfig, 'miniAppUrl'>
 ): WebhookMethodReply {
   const miniAppUrl = usableHttpsUrl(config.miniAppUrl);
-  const button = webAppButton(chat, START_BUTTON_TEXT, miniAppUrl);
-  const text = miniAppUrl ? HERO_CAPTION : `${HERO_CAPTION}\n\n${MISSING_MINI_APP}`;
+  const rows: Array<Array<InlineButton>> = [];
+  if (chat.type === 'private' && miniAppUrl) {
+    rows.push([{ text: START_BUTTON_TEXT, web_app: { url: miniAppUrl } }]);
+  }
+  rows.push([{ text: SITE_BUTTON_TEXT, url: SITE_URL }]);
+  const text = miniAppUrl || chat.type !== 'private'
+    ? START_CAPTION
+    : `${START_CAPTION}\n\n${MISSING_MINI_APP}`;
   return {
     method: 'sendMessage',
     chat_id: chat.id,
     text,
     parse_mode: 'HTML',
-    ...(button ? { reply_markup: button } : {}),
+    reply_markup: { inline_keyboard: rows },
   };
 }
 
@@ -151,7 +169,7 @@ async function renewalReply(
   };
 }
 
-function webAppButton(chat: ChatRef, text: string, url: string | null): WebAppMarkup | null {
+function webAppButton(chat: ChatRef, text: string, url: string | null): InlineMarkup | null {
   if (chat.type !== 'private' || !url) return null;
   return { inline_keyboard: [[{ text, web_app: { url } }]] };
 }

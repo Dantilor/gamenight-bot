@@ -16,7 +16,15 @@ export const HERO_CAPTION =
   'И позвольте атмосфере сделать своё дело\n\n' +
   '<b>GameNight Host - Вы диктуете правила, мы создаем.</b>';
 
+export const START_WEB_BLOCK =
+  '🌐 <b>GameNight Host теперь и в браузере!</b>\n\n' +
+  'Любимые игры доступны на нашем новом сайте. Открывай с телефона или компьютера!';
+
+export const START_CAPTION = `${HERO_CAPTION}\n\n${START_WEB_BLOCK}`;
+
 export const START_BUTTON_TEXT = 'Стать частью игры';
+export const SITE_BUTTON_TEXT = '🌐 Открыть сайт';
+export const SITE_URL = 'https://play.gamenighthost.ru/';
 export const PLAY_BUTTON_TEXT = '🎮 Открыть GameNight Host';
 export const RENEW_BUTTON_TEXT = 'Продлить подписку';
 export const OPEN_PREMIUM_BUTTON_TEXT = 'Открыть Premium';
@@ -90,15 +98,11 @@ export async function sendExpiryNotice(bot: Telegraf, telegramId: number): Promi
 
 async function sendStartText(ctx: Context, miniAppUrl: string): Promise<void> {
   const buttonUrl = miniAppUrl.trim();
-  const keyboard = buttonUrl
-    ? Markup.inlineKeyboard([Markup.button.webApp(START_BUTTON_TEXT, buttonUrl)])
-    : undefined;
-  const text = buttonUrl ? HERO_CAPTION : `${HERO_CAPTION}\n\nMINI_APP_URL не задан`;
-  if (keyboard) {
-    await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
-    return;
-  }
-  await ctx.reply(text, { parse_mode: 'HTML' });
+  const rows = [];
+  if (buttonUrl) rows.push([Markup.button.webApp(START_BUTTON_TEXT, buttonUrl)]);
+  rows.push([Markup.button.url(SITE_BUTTON_TEXT, SITE_URL)]);
+  const text = buttonUrl ? START_CAPTION : `${START_CAPTION}\n\nMINI_APP_URL не задан`;
+  await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) });
 }
 
 async function sendHero(ctx: Context, heroImagePath: string, miniAppUrl: string, buttonText: string): Promise<void> {

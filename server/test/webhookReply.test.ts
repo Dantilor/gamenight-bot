@@ -168,7 +168,8 @@ test('webhook commands return one Bot API method and do not call Telegram', asyn
     assert.equal(startBody.method, 'sendMessage');
     assert.equal('photo' in startBody, false);
     assert.match(startBody.text, /GameNight Host теперь и в браузере/);
-    assert.equal(startBody.reply_markup.inline_keyboard[0][0].text, START_BUTTON_TEXT);
+    assert.equal(START_BUTTON_TEXT, '🎮 Играть в Mini App');
+    assert.equal(startBody.reply_markup.inline_keyboard[0][0].text, '🎮 Играть в Mini App');
     assert.equal(startBody.reply_markup.inline_keyboard[0][0].web_app.url, MINI_APP);
     assert.equal(startBody.reply_markup.inline_keyboard[1][0].text, SITE_BUTTON_TEXT);
     assert.equal(startBody.reply_markup.inline_keyboard[1][0].url, SITE_URL);

@@ -132,7 +132,8 @@ test('start, play, and ping keep the current welcome and WebApp buttons', async 
     assert.match(startBody.text ?? '', /GameNight Host теперь и в браузере/);
     assert.equal(startBody.parse_mode, 'HTML');
     assert.equal(startBody.photo, undefined);
-    assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.text, START_BUTTON_TEXT);
+    assert.equal(START_BUTTON_TEXT, '🎮 Играть в Mini App');
+    assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.text, '🎮 Играть в Mini App');
     assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, 'https://dantilor-telegram-card-game-a2cc.twc1.net');
     assert.equal(startBody.reply_markup?.inline_keyboard?.[1]?.[0]?.text, SITE_BUTTON_TEXT);
     assert.equal(startBody.reply_markup?.inline_keyboard?.[1]?.[0]?.url, SITE_URL);

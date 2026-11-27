@@ -32,7 +32,7 @@ export const SITE_MESSAGE =
   '✨ Твой любимый GameNight Host — теперь на полноценном сайте!\n\n' +
   '<b>👇 Переходи и начинай играть!</b>';
 
-export const START_BUTTON_TEXT = 'Стать частью игры';
+export const START_BUTTON_TEXT = '🎮 Играть в Mini App';
 export const SITE_BUTTON_TEXT = '🌐 Открыть сайт';
 export const SITE_URL = 'https://play.gamenighthost.ru/';
 export const PLAY_BUTTON_TEXT = '🎮 Открыть GameNight Host';

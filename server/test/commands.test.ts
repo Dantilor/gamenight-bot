@@ -4,7 +4,15 @@ import http from 'node:http';
 import test from 'node:test';
 import type { Express } from 'express';
 import type { Telegraf } from 'telegraf';
-import { HERO_CAPTION, OPEN_PREMIUM_BUTTON_TEXT, PLAY_BUTTON_TEXT, START_BUTTON_TEXT } from '../src/bot.js';
+import {
+  HERO_CAPTION,
+  OPEN_PREMIUM_BUTTON_TEXT,
+  PLAY_BUTTON_TEXT,
+  SITE_BUTTON_TEXT,
+  SITE_URL,
+  START_BUTTON_TEXT,
+  START_CAPTION,
+} from '../src/bot.js';
 import { readConfig, type AppConfig } from '../src/config.js';
 import { createApp } from '../src/main.js';
 
@@ -117,17 +125,26 @@ test('start, play, and ping keep the current welcome and WebApp buttons', async 
       text?: string;
       parse_mode?: string;
       photo?: string;
-      reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; web_app?: { url?: string } }>> };
+      reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; web_app?: { url?: string }; url?: string }>> };
     };
-    assert.equal(startBody.text, HERO_CAPTION);
+    assert.equal(startBody.text, START_CAPTION);
+    assert.match(startBody.text ?? '', /GameNight Host теперь и в браузере/);
     assert.equal(startBody.parse_mode, 'HTML');
     assert.equal(startBody.photo, undefined);
     assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.text, START_BUTTON_TEXT);
     assert.equal(startBody.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, 'https://dantilor-telegram-card-game-a2cc.twc1.net');
+    assert.equal(startBody.reply_markup?.inline_keyboard?.[1]?.[0]?.text, SITE_BUTTON_TEXT);
+    assert.equal(startBody.reply_markup?.inline_keyboard?.[1]?.[0]?.url, SITE_URL);
     assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(START_BUTTON_TEXT)), false);
     assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(HERO_CAPTION) && call.body.includes(PLAY_BUTTON_TEXT)), true);
     assert.equal(telegram.calls.some((call) => call.method === 'sendMessage' && call.body.includes('"text":"pong"')), true);
     assert.equal(rendered.includes('remove_keyboard'), true);
+
+    const restart = await post(server.base, command(10, '/start'));
+    assert.equal(restart.status, 200);
+    const startCalls = telegram.calls.filter((call) => call.method === 'sendMessage' && call.body.includes(START_BUTTON_TEXT));
+    assert.equal(startCalls.length, 2);
+    assert.equal(JSON.parse(startCalls[1].body).text, START_CAPTION);
   } finally {
     await server.close();
     await telegram.close();

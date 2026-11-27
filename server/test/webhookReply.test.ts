@@ -5,7 +5,15 @@ import path from 'node:path';
 import test from 'node:test';
 import type { Express } from 'express';
 import type { Telegraf } from 'telegraf';
-import { HERO_CAPTION, OPEN_PREMIUM_BUTTON_TEXT, PLAY_BUTTON_TEXT, START_BUTTON_TEXT } from '../src/bot.js';
+import {
+  HERO_CAPTION,
+  OPEN_PREMIUM_BUTTON_TEXT,
+  PLAY_BUTTON_TEXT,
+  SITE_BUTTON_TEXT,
+  SITE_URL,
+  START_BUTTON_TEXT,
+  START_CAPTION,
+} from '../src/bot.js';
 import { readConfig, type AppConfig } from '../src/config.js';
 import { createApp, startListening } from '../src/main.js';
 import { formatTariffs, premiumPageUrl } from '../src/plans.js';
@@ -104,15 +112,16 @@ async function post(base: string, body: unknown, secret: string | null = SECRET)
   });
 }
 
-function startReply(chatId: number, buttonText: string | null) {
+function startReply(chatId: number, includeMiniApp: boolean) {
+  const rows = [];
+  if (includeMiniApp) rows.push([{ text: START_BUTTON_TEXT, web_app: { url: MINI_APP } }]);
+  rows.push([{ text: SITE_BUTTON_TEXT, url: SITE_URL }]);
   return {
     method: 'sendMessage',
     chat_id: chatId,
-    text: HERO_CAPTION,
+    text: START_CAPTION,
     parse_mode: 'HTML',
-    ...(buttonText
-      ? { reply_markup: { inline_keyboard: [[{ text: buttonText, web_app: { url: MINI_APP } }]] } }
-      : {}),
+    reply_markup: { inline_keyboard: rows },
   };
 }
 
@@ -154,24 +163,33 @@ test('webhook commands return one Bot API method and do not call Telegram', asyn
     const start = await post(server.base, commandUpdate(2, '/start start-payload-9f3', { id: 7, type: 'private' }));
     assert.equal(start.status, 200);
     const startBody = await start.json();
-    assert.deepEqual(startBody, startReply(7, START_BUTTON_TEXT));
+    assert.deepEqual(startBody, startReply(7, true));
     assert.equal(startBody.method, 'sendMessage');
     assert.equal('photo' in startBody, false);
+    assert.match(startBody.text, /GameNight Host теперь и в браузере/);
+    assert.equal(startBody.reply_markup.inline_keyboard[0][0].text, START_BUTTON_TEXT);
+    assert.equal(startBody.reply_markup.inline_keyboard[0][0].web_app.url, MINI_APP);
+    assert.equal(startBody.reply_markup.inline_keyboard[1][0].text, SITE_BUTTON_TEXT);
+    assert.equal(startBody.reply_markup.inline_keyboard[1][0].url, SITE_URL);
     assert.equal(JSON.stringify(startBody).includes('start-payload-9f3'), false);
     assert.equal(JSON.stringify(startBody).includes('token=secret'), false);
     assert.equal(JSON.stringify(startBody).includes('hero-new.png'), false);
 
     const named = await post(server.base, commandUpdate(3, '/start@GameNightHostBot', { id: 7, type: 'private' }));
-    assert.deepEqual(await named.json(), startReply(7, START_BUTTON_TEXT));
+    assert.deepEqual(await named.json(), startReply(7, true));
+
+    const again = await post(server.base, commandUpdate(30, '/start', { id: 7, type: 'private' }));
+    assert.deepEqual(await again.json(), startReply(7, true));
 
     const play = await post(server.base, commandUpdate(4, '/play', { id: 11, type: 'private' }));
     assert.deepEqual(await play.json(), photoReply(11, PLAY_BUTTON_TEXT));
 
     const group = await post(server.base, commandUpdate(5, '/start', { id: -100, type: 'group' }));
     const groupBody = await group.json();
-    assert.deepEqual(groupBody, startReply(-100, null));
+    assert.deepEqual(groupBody, startReply(-100, false));
     assert.equal(groupBody.method, 'sendMessage');
-    assert.equal('reply_markup' in groupBody, false);
+    assert.equal(groupBody.reply_markup.inline_keyboard.length, 1);
+    assert.equal(groupBody.reply_markup.inline_keyboard[0][0].url, SITE_URL);
 
     const foreign = await post(server.base, commandUpdate(6, '/ping@OtherBot', { id: -100, type: 'supergroup' }));
     assert.equal(foreign.status, 200);
@@ -256,13 +274,7 @@ test('a missing image or unusable URL is a sendMessage prepared before any photo
   const server = await listen(app);
   try {
     const missingImage = await post(server.base, commandUpdate(1, '/start', { id: 7, type: 'private' }));
-    assert.deepEqual(await missingImage.json(), {
-      method: 'sendMessage',
-      chat_id: 7,
-      text: HERO_CAPTION,
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [[{ text: START_BUTTON_TEXT, web_app: { url: MINI_APP } }]] },
-    });
+    assert.deepEqual(await missingImage.json(), startReply(7, true));
   } finally {
     await server.close();
   }
@@ -288,8 +300,9 @@ test('a missing image or unusable URL is a sendMessage prepared before any photo
     assert.deepEqual(await response.json(), {
       method: 'sendMessage',
       chat_id: 7,
-      text: `${HERO_CAPTION}\n\nMINI_APP_URL не задан`,
+      text: `${START_CAPTION}\n\nMINI_APP_URL не задан`,
       parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: SITE_BUTTON_TEXT, url: SITE_URL }]] },
     });
     assert.deepEqual(missingCalls.calls, []);
     assert.deepEqual(insecureCalls.calls, []);

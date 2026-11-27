@@ -10,6 +10,7 @@ import {
   OPEN_PREMIUM_BUTTON_TEXT,
   PLAY_BUTTON_TEXT,
   SITE_BUTTON_TEXT,
+  SITE_MESSAGE,
   SITE_URL,
   START_BUTTON_TEXT,
   START_CAPTION,
@@ -194,6 +195,48 @@ test('webhook commands return one Bot API method and do not call Telegram', asyn
     const foreign = await post(server.base, commandUpdate(6, '/ping@OtherBot', { id: -100, type: 'supergroup' }));
     assert.equal(foreign.status, 200);
     assert.equal(await foreign.text(), '');
+    assert.deepEqual(telegram.calls, []);
+  } finally {
+    await server.close();
+  }
+});
+
+test('/site is one sendMessage with a plain HTTPS URL button and no outbound call', async () => {
+  const { app, bot } = createApp(config(), { fetchImpl: forbidFetch() });
+  const telegram = arm(bot);
+  const server = await listen(app);
+  const expected = (chatId: number) => ({
+    method: 'sendMessage',
+    chat_id: chatId,
+    text: SITE_MESSAGE,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: [[{ text: SITE_BUTTON_TEXT, url: 'https://play.gamenighthost.ru/' }]] },
+  });
+  try {
+    const first = await post(server.base, commandUpdate(1, '/site', { id: 7, type: 'private' }));
+    assert.equal(first.status, 200);
+    assert.match(first.headers.get('content-type') ?? '', /^application\/json/);
+    const body = await first.json();
+    assert.deepEqual(body, expected(7));
+    assert.equal(JSON.stringify(body).includes('web_app'), false);
+    assert.match(body.text, /16 игр и более 15 000 вопросов/);
+    assert.match(body.text, /<b>👇 Переходи и начинай играть!<\/b>/);
+
+    const again = await post(server.base, commandUpdate(2, '/site', { id: 7, type: 'private' }));
+    assert.deepEqual(await again.json(), expected(7));
+    const named = await post(server.base, commandUpdate(3, '/site@GameNightHostBot', { id: 7, type: 'private' }));
+    assert.deepEqual(await named.json(), expected(7));
+    const withText = await post(server.base, commandUpdate(4, '/site now', { id: 7, type: 'private' }));
+    assert.deepEqual(await withText.json(), expected(7));
+    const group = await post(server.base, commandUpdate(5, '/site', { id: -100, type: 'group' }));
+    assert.deepEqual(await group.json(), expected(-100));
+    const foreign = await post(server.base, commandUpdate(6, '/site@OtherBot', { id: -100, type: 'supergroup' }));
+    assert.equal(await foreign.text(), '');
+
+    const start = await post(server.base, commandUpdate(7, '/start', { id: 7, type: 'private' }));
+    assert.deepEqual(await start.json(), startReply(7, true));
+    const play = await post(server.base, commandUpdate(8, '/play', { id: 7, type: 'private' }));
+    assert.deepEqual(await play.json(), photoReply(7, PLAY_BUTTON_TEXT));
     assert.deepEqual(telegram.calls, []);
   } finally {
     await server.close();

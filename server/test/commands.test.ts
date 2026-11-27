@@ -9,6 +9,7 @@ import {
   OPEN_PREMIUM_BUTTON_TEXT,
   PLAY_BUTTON_TEXT,
   SITE_BUTTON_TEXT,
+  SITE_MESSAGE,
   SITE_URL,
   START_BUTTON_TEXT,
   START_CAPTION,
@@ -145,6 +146,43 @@ test('start, play, and ping keep the current welcome and WebApp buttons', async 
     const startCalls = telegram.calls.filter((call) => call.method === 'sendMessage' && call.body.includes(START_BUTTON_TEXT));
     assert.equal(startCalls.length, 2);
     assert.equal(JSON.parse(startCalls[1].body).text, START_CAPTION);
+  } finally {
+    await server.close();
+    await telegram.close();
+  }
+});
+
+test('/site answers in api mode with a plain URL button and can be repeated', async () => {
+  const { app, bot } = createApp(config());
+  const telegram = await mockTelegram(bot);
+  const server = await listen(app);
+  try {
+    assert.equal((await post(server.base, command(1, '/site'))).status, 200);
+    assert.equal((await post(server.base, command(2, '/site'))).status, 200);
+    const calls = telegram.calls.filter((call) => call.method === 'sendMessage');
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      const body = JSON.parse(call.body) as {
+        chat_id: number;
+        text: string;
+        parse_mode: string;
+        reply_markup: { inline_keyboard: Array<Array<{ text: string; url?: string; web_app?: unknown }>> };
+      };
+      assert.equal(body.chat_id, 7);
+      assert.equal(body.text, SITE_MESSAGE);
+      assert.equal(body.parse_mode, 'HTML');
+      assert.equal(body.reply_markup.inline_keyboard.length, 1);
+      assert.equal(body.reply_markup.inline_keyboard[0].length, 1);
+      assert.equal(body.reply_markup.inline_keyboard[0][0].text, SITE_BUTTON_TEXT);
+      assert.equal(body.reply_markup.inline_keyboard[0][0].url, 'https://play.gamenighthost.ru/');
+      assert.equal(body.reply_markup.inline_keyboard[0][0].web_app, undefined);
+    }
+    assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto'), false);
+
+    assert.equal((await post(server.base, command(3, '/start'))).status, 200);
+    assert.equal((await post(server.base, command(4, '/play'))).status, 200);
+    assert.equal(telegram.calls.some((call) => call.method === 'sendMessage' && call.body.includes(START_BUTTON_TEXT)), true);
+    assert.equal(telegram.calls.some((call) => call.method === 'sendPhoto' && call.body.includes(PLAY_BUTTON_TEXT)), true);
   } finally {
     await server.close();
     await telegram.close();

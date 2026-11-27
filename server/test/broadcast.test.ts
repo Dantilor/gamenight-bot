@@ -8,7 +8,7 @@ import type { Telegraf } from 'telegraf';
 import { BROADCAST_OPEN_BUTTON, handleBroadcastTurn } from '../src/broadcastPanel.js';
 import { createBroadcastStore, type BroadcastStore } from '../src/broadcastStore.js';
 import { checkTelegramApi, createTelegramSender, runBroadcastWorker, type OutboundSender } from '../src/broadcastWorker.js';
-import { PLAY_BUTTON_TEXT, SITE_BUTTON_TEXT, SITE_URL, START_BUTTON_TEXT } from '../src/bot.js';
+import { PLAY_BUTTON_TEXT, SITE_BUTTON_TEXT, SITE_MESSAGE, SITE_URL, START_BUTTON_TEXT } from '../src/bot.js';
 import { readConfig, type AppConfig } from '../src/config.js';
 import { createApp } from '../src/main.js';
 import { assertMigrationIsSafe } from '../src/migrationSql.js';
@@ -340,6 +340,13 @@ test('webhook mode keeps start and answers admin without calling Telegram', asyn
       assert.equal(startBody.reply_markup.inline_keyboard[0][0].web_app.url, MINI_APP);
       assert.deepEqual(startBody.reply_markup.inline_keyboard[1], [{ text: SITE_BUTTON_TEXT, url: SITE_URL }]);
 
+      for (const id of [20, 21]) {
+        const site = await (await post(server.base, textUpdate(id, OTHER, '/site'))).json();
+        assert.equal(site.method, 'sendMessage');
+        assert.equal(site.text, SITE_MESSAGE);
+        assert.deepEqual(site.reply_markup.inline_keyboard, [[{ text: SITE_BUTTON_TEXT, url: SITE_URL }]]);
+      }
+
       const stranger = await post(server.base, textUpdate(2, OTHER, '/admin'));
       assert.equal((await stranger.json()).text, 'Команда недоступна.');
 
@@ -347,6 +354,12 @@ test('webhook mode keeps start and answers admin without calling Telegram', asyn
       const adminBody = await admin.json();
       assert.equal(adminBody.method, 'sendMessage');
       assert.match(JSON.stringify(adminBody), /Создать рассылку/);
+      assert.equal(JSON.stringify(adminBody).includes(SITE_URL), false);
+
+      const subscribe = await (await post(server.base, textUpdate(4, OTHER, '/subscribe'))).json();
+      assert.match(subscribe.text, /Отказ от информационных уведомлений снят/);
+      const unsubscribe = await (await post(server.base, textUpdate(5, OTHER, '/unsubscribe'))).json();
+      assert.match(unsubscribe.text, /Информационные уведомления выключены/);
       assert.deepEqual(telegram.calls, []);
     } finally {
       await server.close();

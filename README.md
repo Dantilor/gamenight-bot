@@ -94,6 +94,22 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f server/db/migrations/002_bot_broadcas
 
 Роли бота нужны чтение и запись только в новые таблицы `bot_broadcast_*` и `SELECT (telegram_id)` на `users`. Права на изменение `users`, `subscriptions`, `payments` и `plans` ей не выдавайте.
 
+## Команды и меню BotFather
+
+`/site` отвечает сообщением о сайте и обычной HTTPS-кнопкой «🌐 Открыть сайт» на `https://play.gamenighthost.ru/` (не `web_app`). Он работает и в режиме `api`, и в режиме `webhook`. В режиме `webhook` ответ уходит одним методом `sendMessage` в HTTP-ответе, без исходящих запросов к Telegram.
+
+`/subscribe` снимает отказ от информационных сообщений бота и показывает кнопку согласия на рекламу. `/unsubscribe` записывает отказ и отзывает согласие на рекламу. Информационные рассылки идут и без `/subscribe`, если человек не отказался.
+
+Список для BotFather (`/setcommands`), вносится вручную после деплоя. `/admin` в него не входит:
+
+```
+start - Главное меню
+play - Играть в Telegram
+site - Открыть сайт GameNight Host
+subscribe - Включить новости бота
+unsubscribe - Отключить новости бота
+```
+
 ## Проверка
 
 ```bash

@@ -5,6 +5,7 @@ import {
   OPEN_PREMIUM_BUTTON_TEXT,
   PLAY_BUTTON_TEXT,
   SITE_BUTTON_TEXT,
+  SITE_MESSAGE,
   SITE_URL,
   START_BUTTON_TEXT,
   START_CAPTION,
@@ -84,6 +85,7 @@ export async function buildWebhookReply(
   if (command) {
     if (command.name === 'ping') return pingReply(command.chat);
     if (command.name === 'start') return startReply(command.chat, config);
+    if (command.name === 'site') return siteReply(command.chat);
     if (command.name === 'play') return welcomeReply(command.chat, PLAY_BUTTON_TEXT, config, fileExists);
     return null;
   }
@@ -120,6 +122,16 @@ function startReply(
     text,
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: rows },
+  };
+}
+
+function siteReply(chat: ChatRef): WebhookMethodReply {
+  return {
+    method: 'sendMessage',
+    chat_id: chat.id,
+    text: SITE_MESSAGE,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: [[{ text: SITE_BUTTON_TEXT, url: SITE_URL }]] },
   };
 }
 

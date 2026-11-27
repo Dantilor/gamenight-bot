@@ -24,6 +24,14 @@ export const START_WEB_BLOCK =
 
 export const START_CAPTION = `${HERO_CAPTION}\n\n${START_WEB_BLOCK}`;
 
+export const SITE_MESSAGE =
+  '🌐 <b>GameNight Host — теперь и в браузере!</b>\n\n' +
+  '🎲 16 игр и более 15 000 вопросов для друзей и компаний.\n\n' +
+  '📱 Играй с телефона.\n' +
+  '💻 Открывай с компьютера.\n' +
+  '✨ Твой любимый GameNight Host — теперь на полноценном сайте!\n\n' +
+  '<b>👇 Переходи и начинай играть!</b>';
+
 export const START_BUTTON_TEXT = 'Стать частью игры';
 export const SITE_BUTTON_TEXT = '🌐 Открыть сайт';
 export const SITE_URL = 'https://play.gamenighthost.ru/';
@@ -60,6 +68,12 @@ export function createBot(deps: BotDeps): Telegraf {
     console.log('[bot] /start', { id: ctx.from?.id });
     await rememberActor(ctx, deps);
     await sendStartText(ctx, miniAppUrl);
+  });
+
+  bot.command('site', async (ctx) => {
+    console.log('[bot] /site', { id: ctx.from?.id });
+    await rememberActor(ctx, deps);
+    await ctx.reply(SITE_MESSAGE, { parse_mode: 'HTML', ...Markup.inlineKeyboard([Markup.button.url(SITE_BUTTON_TEXT, SITE_URL)]) });
   });
 
   bot.command('play', async (ctx) => {

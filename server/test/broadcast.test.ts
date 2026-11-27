@@ -69,6 +69,7 @@ async function withStore(fn: (store: BroadcastStore, query: SqlQuery) => Promise
     INSERT INTO subscriptions (telegram_id, plan_id, active_until) VALUES (999, 'premium_1m', now() + interval '30 days');
   `);
   await pg.exec(fs.readFileSync(path.join(process.cwd(), 'server', 'db', 'migrations', '002_bot_broadcast.sql'), 'utf8'));
+  await pg.exec(fs.readFileSync(path.join(process.cwd(), 'server', 'db', 'migrations', '003_bot_broadcast_buttons.sql'), 'utf8'));
   const asQuery = (target: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[]; rowCount?: number; affectedRows?: number }> }): SqlQuery => {
     return async (sql, params) => {
       const result = await target.query(sql, params);
@@ -106,7 +107,7 @@ test('broadcast migration does not touch premium tables', () => {
   const storeSource = fs.readFileSync(path.join(process.cwd(), 'server', 'src', 'broadcastStore.ts'), 'utf8');
   assertMigrationIsSafe(sql);
   assert.equal(fs.readFileSync(path.join(process.cwd(), 'server', 'src', 'main.ts'), 'utf8').includes('runBroadcastWorker'), false);
-  assert.equal(BROADCAST_OPEN_BUTTON, PLAY_BUTTON_TEXT);
+  assert.equal(BROADCAST_OPEN_BUTTON, START_BUTTON_TEXT);
   assert.equal(/\b(insert\s+into|update|delete\s+from)\s+users\b/i.test(storeSource), false);
   assert.match(storeSource, /FROM users u/);
   assert.match(sql, /notify_opt_out/);
@@ -164,7 +165,7 @@ test('draft preview and test queue stay with the admin', async () => {
     assert.equal(preview?.method, 'sendMessage');
     assert.equal(preview?.text, '<b>Добрый вечер</b>');
     assert.equal(preview?.parse_mode, 'HTML');
-    assert.equal(preview?.reply_markup?.inline_keyboard?.[0]?.[0]?.text, PLAY_BUTTON_TEXT);
+    assert.equal(preview?.reply_markup?.inline_keyboard?.[0]?.[0]?.text, START_BUTTON_TEXT);
     const queued = await handleBroadcastTurn(callbackUpdate(4, ADMIN, 'ba:test'), deps(store));
     assert.match(queued?.text ?? '', /только для Telegram ID 434230321/);
     const again = await handleBroadcastTurn(callbackUpdate(5, ADMIN, 'ba:test'), deps(store));
@@ -219,7 +220,7 @@ test('stopping a campaign prevents delivery and a timeout is not success', async
     const stopped = await handleBroadcastTurn(callbackUpdate(5, ADMIN, 'ba:stop'), deps(store));
     assert.match(stopped?.text ?? '', /остановлена/);
     const sender: OutboundSender = { async send() { throw new Error('sender must not be called'); } };
-    const report = await runBroadcastWorker(store, sender, { buttonUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 0);
     const rows = await query<{ status: string; telegram_message_id: number | null }>(
       'SELECT status, telegram_message_id FROM bot_broadcast_deliveries'
@@ -235,7 +236,7 @@ test('stopping a campaign prevents delivery and a timeout is not success', async
         throw new Error('connect ETIMEDOUT');
       },
     };
-    const failed = await runBroadcastWorker(store, failing, { buttonUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 1, sleep: async () => undefined });
+    const failed = await runBroadcastWorker(store, failing, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 1, sleep: async () => undefined });
     assert.equal(failed.sent, 0);
     assert.equal(calls, 1);
     const after = await query<{ status: string; telegram_message_id: number | null }>(
@@ -263,7 +264,7 @@ test('worker records a blocked user without a message id', async () => {
         throw error;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { buttonUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(report.sent, 0);
     assert.equal(report.blocked, 1);
     const delivery = await query<{ status: string; telegram_message_id: number | null }>('SELECT status, telegram_message_id FROM bot_broadcast_deliveries');
@@ -310,13 +311,13 @@ test('worker records a message only after Telegram confirms it once', async () =
         return 501;
       },
     };
-    const report = await runBroadcastWorker(store, sender, { buttonUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
+    const report = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, maxAttempts: 5, sleep: async () => undefined });
     assert.equal(report.sent, 1);
     assert.deepEqual(seen, [OTHER, OTHER]);
     const row = await query<{ status: string; telegram_message_id: string | number }>('SELECT status, telegram_message_id FROM bot_broadcast_deliveries');
     assert.equal(row.rows[0]?.status, 'sent');
     assert.equal(Number(row.rows[0]?.telegram_message_id), 501);
-    const second = await runBroadcastWorker(store, sender, { buttonUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
+    const second = await runBroadcastWorker(store, sender, { miniAppUrl: MINI_APP, minIntervalMs: 0, sleep: async () => undefined });
     assert.equal(second.sent, 0);
     assert.equal(seen.length, 2);
   });
@@ -402,7 +403,7 @@ test('api mode keeps start as text and limits the test send to the admin', async
 
 test('telegram sender rejects a result without message_id', async () => {
   const sender = createTelegramSender('123456789:AAFakeTokenForTestsOnly000', async () => new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
-  await assert.rejects(() => sender.send({ chatId: ADMIN, text: 'Текст', photoFileId: null, buttonUrl: null }), /did not confirm/);
+  await assert.rejects(() => sender.send({ chatId: ADMIN, text: 'Текст', photoFileId: null, replyMarkup: null }), /did not confirm/);
 });
 
 test('telegram access check calls getMe and does not send', async () => {

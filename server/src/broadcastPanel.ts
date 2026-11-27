@@ -1,16 +1,32 @@
 import crypto from 'node:crypto';
+import {
+  BROADCAST_OPEN_BUTTON,
+  buildBroadcastMarkup,
+  describeButtonMode,
+  httpsUrl,
+  nextButtonMode,
+} from './broadcastButtons.js';
+import {
+  evaluateMassSendGate,
+  findUnverifiedClaims,
+  isPromotionalWebLaunch,
+  WEB_LAUNCH_PRESET,
+  WEB_UPDATE_PRESET,
+} from './broadcastPresets.js';
 import type { BroadcastDraft, BroadcastStore } from './broadcastStore.js';
 import { redact } from './log.js';
+import { checkTelegramHtml } from './telegramHtml.js';
 import type { TelegramUpdate } from './webhook.js';
 
-export const BROADCAST_OPEN_BUTTON = '🎮 Открыть GameNight Host';
+export { BROADCAST_OPEN_BUTTON };
 
 const TEXT_LIMIT = 4096;
 const CAPTION_LIMIT = 1024;
 
 type CallbackButton = { text: string; callback_data: string };
 type WebAppButton = { text: string; web_app: { url: string } };
-type InlineMarkup = { inline_keyboard: Array<Array<CallbackButton | WebAppButton>> };
+type UrlButton = { text: string; url: string };
+type InlineMarkup = { inline_keyboard: Array<Array<CallbackButton | WebAppButton | UrlButton>> };
 
 export type PanelReply = {
   method: 'sendMessage' | 'sendPhoto';
@@ -95,6 +111,9 @@ async function adminTurn(
   if (action === 'new') return askText(actor, draft, store);
   if (action === 'photo') return askPhoto(actor, draft, store);
   if (action === 'preview') return preview(actor, draft, deps.miniAppUrl);
+  if (action === 'btn') return cycleButtons(actor, draft, store);
+  if (action === 'preset') return loadPreset(actor, draft, store);
+  if (action === 'update') return loadPreset(actor, draft, store, 'update');
   if (action === 'test') return queueTest(actor, draft, store);
   if (action === 'send') return askConfirm(actor, draft, store);
   if (action === 'stats') return showStats(actor, store);
@@ -138,8 +157,10 @@ async function consentTurn(actor: Actor, optedIn: boolean, deps: BroadcastTurnDe
 }
 
 async function saveText(actor: Actor, draft: BroadcastDraft, text: string, store: BroadcastStore): Promise<PanelReply> {
-  if (text.length > TEXT_LIMIT) return textReply(actor.chatId, `Текст длиннее ${TEXT_LIMIT} символов. Пришлите более короткий.`);
-  if (draft.photoFileId && text.length > CAPTION_LIMIT) {
+  const html = checkTelegramHtml(text);
+  if (!html.ok) return textReply(actor.chatId, `Текст не сохранён: ${html.reason}\nИсправьте и пришлите текст ещё раз.`);
+  if (html.visibleLength > TEXT_LIMIT) return textReply(actor.chatId, `Текст длиннее ${TEXT_LIMIT} символов. Пришлите более короткий.`);
+  if (draft.photoFileId && html.visibleLength > CAPTION_LIMIT) {
     return textReply(actor.chatId, `С фотографией текст не длиннее ${CAPTION_LIMIT} символов. Укоротите его или уберите фото через отмену.`);
   }
   draft.bodyHtml = text;
@@ -151,8 +172,9 @@ async function saveText(actor: Actor, draft: BroadcastDraft, text: string, store
 
 async function savePhoto(actor: Actor, draft: BroadcastDraft, fileId: string, store: BroadcastStore): Promise<PanelReply> {
   if (!draft.bodyHtml.trim()) return textReply(actor.chatId, 'Сначала пришлите текст рассылки.');
-  if (draft.bodyHtml.length > CAPTION_LIMIT) {
-    return textReply(actor.chatId, `Подпись к фотографии не длиннее ${CAPTION_LIMIT} символов. Укоротите текст.`);
+  const html = checkTelegramHtml(draft.bodyHtml);
+  if (!html.ok || html.visibleLength > CAPTION_LIMIT) {
+    return textReply(actor.chatId, `Подпись к фотографии не длиннее ${CAPTION_LIMIT} символов. Укоротите текст или отправьте рассылку без фотографии.`);
   }
   draft.photoFileId = fileId;
   draft.step = 'idle';
@@ -184,6 +206,49 @@ function preview(actor: Actor, draft: BroadcastDraft, miniAppUrl: string): Panel
   return draftMessage(actor.chatId, draft, miniAppUrl);
 }
 
+async function cycleButtons(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
+  draft.buttonMode = nextButtonMode(draft.buttonMode);
+  draft.includeButton = true;
+  draft.confirmToken = null;
+  draft.step = 'idle';
+  await store.saveDraft(draft);
+  return showMenu(actor, draft, false, `Кнопки: ${describeButtonMode(draft.buttonMode)}. Проверьте их в предпросмотре.`);
+}
+
+async function loadPreset(
+  actor: Actor,
+  draft: BroadcastDraft,
+  store: BroadcastStore,
+  kind: 'promo' | 'update' = 'promo'
+): Promise<PanelReply> {
+  const preset = kind === 'update' ? WEB_UPDATE_PRESET : WEB_LAUNCH_PRESET;
+  if (draft.photoFileId) {
+    const html = checkTelegramHtml(preset.bodyHtml);
+    if (!html.ok || html.visibleLength > CAPTION_LIMIT) {
+      return textReply(actor.chatId, 'Шаблон длиннее подписи к фотографии. Начните заново через «Отмена» или отправьте без фотографии.');
+    }
+  }
+  draft.bodyHtml = preset.bodyHtml;
+  draft.audience = preset.audience;
+  draft.buttonMode = preset.buttonMode;
+  draft.webUrl = preset.webUrl;
+  draft.includeButton = true;
+  draft.step = 'idle';
+  draft.confirmToken = null;
+  await store.saveDraft(draft);
+  return showMenu(
+    actor,
+    draft,
+    false,
+    kind === 'update'
+      ? 'Шаблон «Обновление WEB-версии» загружен: аудитория — информация, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.' +
+        (findUnverifiedClaims(preset.bodyHtml).length > 0
+          ? `\nМассовая отправка заблокирована, пока не подтверждено: ${findUnverifiedClaims(preset.bodyHtml).join('; ')}. Тест себе доступен.`
+          : '')
+      : 'Шаблон «Запуск WEB» загружен: аудитория — реклама, кнопки — сайт и Mini App. Ничего не отправлено и не поставлено в очередь.'
+  );
+}
+
 async function queueTest(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
   const result = await store.queueTest(actor.userId, draft);
   if (!result.ok) return textReply(actor.chatId, 'Сначала создайте текст. Тест никому не поставлен.');
@@ -199,12 +264,27 @@ async function queueTest(actor: Actor, draft: BroadcastDraft, store: BroadcastSt
 
 async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
   if (!draft.bodyHtml.trim()) return textReply(actor.chatId, 'Сначала создайте текст. Рассылка не создана.');
+  const gate = evaluateMassSendGate(draft);
+  if (!gate.ok) return textReply(actor.chatId, gate.reason);
   let recipients: number;
   try {
-    recipients = await store.countRecipients(draft.audience);
+    recipients = await store.countRecipients(draft.audience, draft.bodyHtml);
   } catch (error) {
     console.error('[broadcast] recipients were not counted', redact(error));
     return textReply(actor.chatId, 'Список получателей не прочитан. Рассылка не создана и сообщения не отправлялись.');
+  }
+  if (draft.audience === 'ads' && recipients === 0) {
+    return textReply(
+      actor.chatId,
+      'Согласий на рекламу пока нет. Получателей: 0. Рассылка не создана.\n' +
+        'Безопасный вариант — добровольная подписка через /subscribe, без изменения уже данных согласий.'
+    );
+  }
+  if (draft.audience === 'notify' && recipients === 0) {
+    return textReply(
+      actor.chatId,
+      'Получателей: 0. Все доступные пользователи уже получили этот текст или недоступны (отписка, блокировка). Рассылка не создана.'
+    );
   }
   const token = crypto.randomBytes(6).toString('hex');
   draft.step = 'confirm';
@@ -213,28 +293,35 @@ async function askConfirm(actor: Actor, draft: BroadcastDraft, store: BroadcastS
   const audience = draft.audience === 'ads'
     ? 'реклама. В очередь попадут только те, кто заранее разрешил рекламу.'
     : 'информация. Берутся Telegram ID из users, кроме отказавшихся и недоступных.';
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [
+    [{ text: '✅ Подтвердить', callback_data: `ba:go:${token}` }],
+  ];
+  if (!isPromotionalWebLaunch(draft.bodyHtml)) {
+    keyboard.push([{ text: draft.audience === 'ads' ? '🔔 Сделать информацией' : '📣 Сделать рекламой', callback_data: 'ba:aud' }]);
+  }
+  keyboard.push([{ text: '← Назад', callback_data: 'ba:menu' }]);
   return textReply(
     actor.chatId,
-    `Получателей: ${recipients}.\nАудитория: ${audience}\n` +
+    `Получателей: ${recipients}.\nАудитория: ${audience}\nКнопки: ${describeButtonMode(draft.buttonMode)}.\n` +
       'Это ещё не отправка. Подтверждение только ставит сообщения в очередь.\n' +
+      'Перед каждой фактической отправкой worker ещё раз проверит согласие и блокировку.\n' +
       'Доставка будет засчитана после message_id от Telegram.',
-    {
-      inline_keyboard: [
-        [{ text: '✅ Подтвердить', callback_data: `ba:go:${token}` }],
-        [{ text: draft.audience === 'ads' ? '🔔 Сделать информацией' : '📣 Сделать рекламой', callback_data: 'ba:aud' }],
-        [{ text: '← Назад', callback_data: 'ba:menu' }],
-      ],
-    }
+    { inline_keyboard: keyboard }
   );
 }
 
 async function confirm(actor: Actor, draft: BroadcastDraft, token: string, store: BroadcastStore): Promise<PanelReply> {
+  const gate = evaluateMassSendGate(draft);
+  if (!gate.ok) return textReply(actor.chatId, gate.reason);
   let result: Awaited<ReturnType<BroadcastStore['queueMass']>>;
   try {
     result = await store.queueMass(actor.userId, token);
   } catch (error) {
     console.error('[broadcast] recipients were not queued', redact(error));
     return textReply(actor.chatId, 'Список получателей не прочитан. Рассылка не создана и сообщения не отправлялись.');
+  }
+  if (!result.ok && result.reason === 'refused') {
+    return textReply(actor.chatId, 'Рассылка отклонена защитой рекламы. Очередь не создана.');
   }
   if (!result.ok && result.reason === 'empty') {
     const text = draft.audience === 'ads'
@@ -258,6 +345,12 @@ async function confirm(actor: Actor, draft: BroadcastDraft, token: string, store
 
 async function toggleAudience(actor: Actor, draft: BroadcastDraft, store: BroadcastStore): Promise<PanelReply> {
   if (draft.step !== 'confirm' || !draft.confirmToken) return showMenu(actor, draft, false);
+  if (isPromotionalWebLaunch(draft.bodyHtml) && draft.audience === 'ads') {
+    return textReply(
+      actor.chatId,
+      'Рекламный анонс сайта нельзя переключить на информационную аудиторию. Рассылка не изменена.'
+    );
+  }
   draft.audience = draft.audience === 'ads' ? 'notify' : 'ads';
   return askConfirm(actor, draft, store);
 }
@@ -287,6 +380,8 @@ async function resetDraft(store: BroadcastStore, draft: BroadcastDraft, clearBod
     draft.photoFileId = null;
     draft.audience = 'notify';
     draft.includeButton = true;
+    draft.buttonMode = 'miniapp';
+    draft.webUrl = null;
   }
   draft.step = 'idle';
   draft.confirmToken = null;
@@ -301,16 +396,15 @@ async function showMenu(actor: Actor, draft: BroadcastDraft, cancelled: boolean,
   const prefix = [cancelled ? 'Черновик отменён.' : '', note ?? ''].filter(Boolean).join('\n');
   return textReply(
     actor.chatId,
-    `${prefix ? `${prefix}\n\n` : ''}Админ-панель рассылок\nТекст: ${text}\nФотография: ${photo}\nАудитория: ${audience}\nКнопка Mini App: ${draft.includeButton ? 'да' : 'нет'}`,
+    `${prefix ? `${prefix}\n\n` : ''}Админ-панель рассылок\nТекст: ${text}\nФотография: ${photo}\nАудитория: ${audience}\nКнопки: ${describeButtonMode(draft.buttonMode)}`,
     menuKeyboard()
   );
 }
 
 function draftMessage(chatId: number, draft: BroadcastDraft, miniAppUrl: string): PanelReply {
-  const buttonUrl = draft.includeButton ? httpsButtonUrl(miniAppUrl) : null;
-  const markup = buttonUrl
-    ? { inline_keyboard: [[{ text: BROADCAST_OPEN_BUTTON, web_app: { url: buttonUrl } }]] }
-    : undefined;
+  const markup =
+    buildBroadcastMarkup(draft.buttonMode, draft.includeButton, { miniAppUrl: httpsUrl(miniAppUrl), webUrl: draft.webUrl }) ??
+    undefined;
   if (draft.photoFileId) {
     return {
       method: 'sendPhoto',
@@ -334,7 +428,10 @@ function menuKeyboard(): InlineMarkup {
   return {
     inline_keyboard: [
       [{ text: '📝 Создать рассылку', callback_data: 'ba:new' }],
+      [{ text: '📋 Шаблон: Обновление WEB-версии', callback_data: 'ba:update' }],
+      [{ text: '📋 Шаблон: запуск WEB (реклама)', callback_data: 'ba:preset' }],
       [{ text: '🖼 Добавить фотографию', callback_data: 'ba:photo' }],
+      [{ text: '🔘 Кнопки: сайт / Mini App / обе', callback_data: 'ba:btn' }],
       [{ text: '👀 Предпросмотр', callback_data: 'ba:preview' }],
       [{ text: '🧪 Отправить тест себе', callback_data: 'ba:test' }],
       [{ text: '🚀 Отправить пользователям', callback_data: 'ba:send' }],
@@ -371,20 +468,8 @@ function actionOf(callback: string | null): string | null {
     const token = action.slice(3);
     return /^[a-f0-9]{12}$/.test(token) ? action : null;
   }
-  if (['menu', 'new', 'photo', 'preview', 'test', 'send', 'stats', 'stop', 'cancel', 'aud'].includes(action)) return action;
+  if (['menu', 'new', 'photo', 'preview', 'test', 'send', 'stats', 'stop', 'cancel', 'aud', 'btn', 'preset', 'update'].includes(action)) return action;
   return null;
-}
-
-function httpsButtonUrl(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'https:' || url.username || url.password) return null;
-    return trimmed;
-  } catch {
-    return null;
-  }
 }
 
 async function ready(store: BroadcastStore): Promise<boolean> {
